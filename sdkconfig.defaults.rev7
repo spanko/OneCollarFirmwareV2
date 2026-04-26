@@ -1,0 +1,6 @@
+# sdkconfig.defaults.rev7
+#
+# Rev 7 specific overrides.
+
+# --- I2S MEMS microphone (Tier 2 audio) ---
+CONFIG_I2S_ENABLE_DEBUG_LOG=n

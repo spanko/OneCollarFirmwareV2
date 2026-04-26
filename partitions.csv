@@ -1,0 +1,18 @@
+# OneCollar 16 MB partition table
+#
+# Notable choices:
+#   - OTA A/B slots at 3 MB each. Firmware fits in <1 MB today; 3 MB is
+#     headroom for TFLite Micro + ML-engine code growth.
+#   - Dedicated `models` partition holds Tier 0 UCF + Tier 1 TFLite bundles.
+#     Per arch doc §4: model bundles updated independently of firmware revs.
+#   - `sessions` partition is LittleFS-formatted by data_logger; holds raw
+#     IMU + audio + label streams pending BLE upload.
+#
+# Name,     Type, SubType,  Offset,   Size,     Flags
+nvs,        data, nvs,      0x9000,   0x6000,
+otadata,    data, ota,      0xf000,   0x2000,
+phy_init,   data, phy,      0x11000,  0x1000,
+ota_0,      app,  ota_0,    0x20000,  0x300000,
+ota_1,      app,  ota_1,    ,         0x300000,
+models,     data, 0x40,     ,         0x200000,
+sessions,   data, 0x40,     ,         0x7E0000,

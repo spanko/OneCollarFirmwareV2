@@ -1,0 +1,7 @@
+# sdkconfig.defaults.rev6
+#
+# Rev 6 specific overrides. Most settings come from sdkconfig.defaults.
+#
+# Currently empty — Rev 6 and Rev 7 use the same ESP32-S3-WROOM-1-N16R8
+# module and the same flash layout. This file exists as a placeholder for
+# future rev-specific config (e.g. clock tuning, peripheral enables).

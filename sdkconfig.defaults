@@ -1,0 +1,39 @@
+# sdkconfig.defaults
+#
+# Settings shared across all OneCollar hardware revisions. Per-rev overrides
+# live in sdkconfig.defaults.${BOARD}.
+
+# --- Target ---
+CONFIG_IDF_TARGET="esp32s3"
+
+# --- Flash ---
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="16MB"
+
+# --- Partition table ---
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+CONFIG_PARTITION_TABLE_FILENAME="partitions.csv"
+
+# --- PSRAM ---
+# Module is N16R8 (8 MB octal PSRAM), but board.h flags it as DO NOT USE
+# until application demand justifies the GPIO cost. Disabled for now.
+CONFIG_SPIRAM=n
+
+# --- Logging ---
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+CONFIG_LOG_DEFAULT_LEVEL=3
+
+# --- USB CDC for native console (S3 USB pins on GPIO19/20) ---
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+
+# --- FreeRTOS ---
+CONFIG_FREERTOS_HZ=1000
+
+# --- BLE / NimBLE host (preferred over Bluedroid for footprint) ---
+CONFIG_BT_ENABLED=y
+CONFIG_BT_NIMBLE_ENABLED=y
+
+# --- Watchdog ---
+CONFIG_ESP_TASK_WDT_INIT=y
+CONFIG_ESP_TASK_WDT_TIMEOUT_S=10
