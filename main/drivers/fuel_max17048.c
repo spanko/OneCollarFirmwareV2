@@ -8,9 +8,9 @@
  *       FUEL_ALRT GPIO interrupt for low-battery wake.
  */
 
+#include "drivers/fuel.h"
 #include "i2c_bus.h"
 #include "board.h"
-#include "esp_err.h"
 #include "esp_log.h"
 
 static const char *TAG = "fuel";

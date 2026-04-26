@@ -12,7 +12,7 @@
  *       power-gating control.
  */
 
-#include "esp_err.h"
+#include "drivers/gps.h"
 #include "esp_log.h"
 #include "board.h"
 

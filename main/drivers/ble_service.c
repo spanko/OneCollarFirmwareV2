@@ -14,7 +14,7 @@
  *       framing per the new spec being authored alongside the Flutter app.
  */
 
-#include "esp_err.h"
+#include "drivers/ble_service.h"
 #include "esp_log.h"
 
 static const char *TAG = "ble";

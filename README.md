@@ -87,9 +87,13 @@ appear elsewhere. To port to a new PCB pinout, edit one file.
 
 ### Capability flags drive code paths, not preprocessor mazes
 
-Each `board.h` defines `BOARD_HAS_IMU_SFLP`, `BOARD_HAS_AUDIO`, etc. Drivers
-and `main.c` branch on these. The CMake layer uses the same flags to decide
-whether to compile the real driver or the capability stub for a given iface.
+Each `board.h` is the **single source of truth** for `BOARD_HAS_IMU_SFLP`,
+`BOARD_HAS_AUDIO`, and the rest of the capability bits. Drivers and `main.c`
+branch on these at the C level. `main/CMakeLists.txt` parses `board.h` at
+configure time (`parse_board_capabilities()`) and surfaces the same names as
+CMake variables, so the build system uses identical predicates to decide
+whether to compile the real driver or the capability stub. There is no
+parallel declaration of these flags in CMake — the two sides cannot drift.
 
 ### HAL ifaces split rev-common from rev-specific
 
@@ -112,9 +116,11 @@ pose supervision) optionality across rev transitions.
 ## Adding a new hardware revision
 
 1. `boards/revN/board.h` — copy the closest existing board, update GPIO
-   assignments and `BOARD_HAS_*` flags.
-2. `boards/revN/board_config.cmake` — set `BOARD_IMU_DRIVER` and the
-   `BOARD_HAS_*` CMake variables.
+   assignments and `BOARD_HAS_*` flags. This is the only place capability
+   flags need to be declared; CMake parses them out of this file.
+2. `boards/revN/board_config.cmake` — set `BOARD_IMU_DRIVER` and
+   `BOARD_TIER0_TOOLCHAIN`, and add the `ONECOLLAR_BOARD_REVN=1` compile
+   define. Do not redeclare `BOARD_HAS_*` here.
 3. If the new rev has a different IMU, add `main/drivers/imu_<part>.c`
    implementing `imu_iface.h` (and optionally `sflp_iface.h` /
    `highg_iface.h` if applicable).

@@ -9,7 +9,7 @@
  *       (IMU INT1 for activity, BLE for connection, optional VAD on Rev 7).
  */
 
-#include "esp_err.h"
+#include "drivers/power.h"
 #include "esp_log.h"
 #include "board.h"
 

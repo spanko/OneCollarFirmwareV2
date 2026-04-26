@@ -19,6 +19,7 @@
 
 #include "data_logger.h"
 #include "board.h"
+#include "hal/imu_iface.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include <string.h>
@@ -86,13 +87,16 @@ esp_err_t data_logger_session_open(datalog_session_header_t *out_header)
     out_header->wall_clock_start_ms = 0;  // TODO: set if BLE-time-sync available
     out_header->capability_flags = compute_capabilities();
 
-#if BOARD_HW_REV == 6
-    out_header->imu_odr_hz = 104;
-    strncpy(out_header->part_imu, "LSM6DSO32X", sizeof(out_header->part_imu) - 1);
-#elif BOARD_HW_REV == 7
-    out_header->imu_odr_hz = 60;
-    strncpy(out_header->part_imu, "LSM6DSV320X", sizeof(out_header->part_imu) - 1);
-#endif
+    {
+        imu_info_t info;
+        if (imu_get_info(&info) == ESP_OK) {
+            out_header->imu_odr_hz = info.odr_hz;
+            if (info.part_name) {
+                strncpy(out_header->part_imu, info.part_name,
+                        sizeof(out_header->part_imu) - 1);
+            }
+        }
+    }
     out_header->audio_sample_rate_hz =
 #if BOARD_HAS_AUDIO
         BOARD_I2S_SAMPLE_RATE;

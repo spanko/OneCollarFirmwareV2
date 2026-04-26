@@ -36,14 +36,13 @@
 #include "hal/highg_iface.h"
 #include "hal/audio_iface.h"
 
-static const char *TAG = "main";
+#include "drivers/fuel.h"
+#include "drivers/ble_service.h"
+#include "drivers/lora.h"
+#include "drivers/gps.h"
+#include "drivers/power.h"
 
-// Forward declarations of subsystems that live in shared driver stubs.
-extern esp_err_t fuel_init(void);
-extern esp_err_t ble_service_init(void);
-extern esp_err_t lora_init(void);
-extern esp_err_t gps_init(void);
-extern esp_err_t power_init(void);
+static const char *TAG = "main";
 
 // ---------------------------------------------------------------------------
 // Banner
