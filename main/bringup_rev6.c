@@ -7,14 +7,14 @@
  * eventual driver implementations — drivers should not be written until the
  * relevant section here passes on hardware.
  *
- * This file is a candidate replacement for main/main.c during the board-validation
- * phase. To use it instead of the production-style scaffold:
+ * Build with:
  *
- *   1. In main/CMakeLists.txt SRCS, replace `main.c` with `bringup_rev6.c`,
- *      and drop the HAL/driver sources this sketch does not use
- *      (drivers/*, data_logger.c, i2c_bus.c).
- *   2. Add `bt` to the REQUIRES list (NimBLE host stack).
- *   3. `idf.py -p /dev/ttyACM0 flash monitor`.
+ *   idf.py -DBOARD=rev6 -DBRINGUP=ON build flash monitor
+ *
+ * The BRINGUP flag is wired in main/CMakeLists.txt: when ON, this file
+ * replaces main.c as the entry point and the `bt` component is added to
+ * REQUIRES so NimBLE links. Default builds (no BRINGUP flag) use the
+ * production main.c untouched.
  *
  * Citation policy (per the bring-up spec):
  *   Every register address, expected value, timing constant, or init sequence

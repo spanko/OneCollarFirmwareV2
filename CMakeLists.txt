@@ -30,6 +30,24 @@ message(STATUS "==========================================")
 message(STATUS " OneCollar firmware — building for ${BOARD}")
 message(STATUS "==========================================")
 
+# Build-time entry-point selection
+#
+# Default build uses main/main.c (the production HAL boot sequence). Set
+# BRINGUP=ON to swap in main/bringup_${BOARD}.c, the validation-pass-or-fail
+# sketch from CLAUDE.md "Bring-up before features". Drivers stay compiled
+# either way; only the entry-point file and the BLE REQUIRES change.
+#
+#   idf.py -DBOARD=rev6 -DBRINGUP=ON build
+option(BRINGUP "Build the bring-up sketch instead of the production main" OFF)
+
+# ESP-IDF spawns a second cmake invocation (component_get_requirements.cmake)
+# to scan component dependencies. That sub-process does NOT inherit cache
+# variables from the parent, so a plain `set(BOARD ... CACHE ...)` is invisible
+# inside main/CMakeLists.txt during requirements scanning. Export BOARD and
+# BRINGUP via the environment as well -- env vars do propagate to the sub-process.
+set(ENV{ONECOLLAR_BOARD} "${BOARD}")
+set(ENV{ONECOLLAR_BRINGUP} "${BRINGUP}")
+
 # Apply shared defaults plus rev-specific overlay
 set(SDKCONFIG_DEFAULTS "sdkconfig.defaults;sdkconfig.defaults.${BOARD}")
 
