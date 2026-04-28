@@ -55,7 +55,7 @@ The collar is the point of greatest technical difficulty and the patent-defining
 | Function | Part | Status | Notes |
 |---|---|---|---|
 | MCU + Wi-Fi/BLE | ESP32-S3-WROOM-1-N16R8 | Carry-over | 16 MB flash, 8 MB PSRAM. Enough compute and memory headroom for Tier 1 + Tier 2. |
-| IMU | TDK ICM-45685 SmartMotion | **New in Rev 7** | On-chip Sensor Inference Framework. Supports richer Tier 0 classifiers than LSM6DSO32X MLC decision trees. |
+| IMU | STMicro LSM6DSV320X | **New in Rev 7** | Replaces Rev 6's LSM6DSO32X. Adds dedicated ±320 g high-g channel and chip-native SFLP (gravity vector + game-rotation quaternion) on top of the same 8-tree / 256-node MLC, and exposes 8 programmable Finite State Machines + ASC (Adaptive Self-Configuration). Same I2C address (0x6A) as Rev 6 IMU. |
 | Microphone | I2S MEMS (SPH0645LM4H or ICS-43434) | **New in Rev 7** | Enables audio-based behaviors (bark, whine, pant). Acoustic venting required in enclosure. |
 | Voice activity detect | Infineon IM73A135 PDM + on-chip VAD | **Evaluating** | Always-on audio wake without MCU duty. Decision pending bench test. |
 | LoRa | RFM95W | Carry-over | Long-range property coverage and hub bridge. |
@@ -93,7 +93,7 @@ The collar is the point of greatest technical difficulty and the patent-defining
 **Model bundle format:** TFLite flatbuffer + small JSON manifest (class labels, input shape, tier assignment, version, base-vs-adaptation role). OTA refresh cadence: monthly base models, weekly per-dog adaptation heads.
 
 **Sensor drivers:**
-- **TDK ICM-45685:** Sensor Inference Framework driver; Tier 0 classifier loaded at boot from flash
+- **STMicro LSM6DSV320X:** MLC + FSM driver; Tier 0 decision trees and state machines loaded at boot from flash. Low-g (±16 g) and high-g (±320 g) channels exposed as parallel data streams; SFLP gravity / game-rotation quaternion read alongside raw IMU.
 - **I2S mic:** ringbuffer pattern (ESP-SR), 16 kHz sample rate, fed to Tier 2 on demand
 - **GPS:** aggressively duty-cycled, gated by Tier 0 state + geofence policy (§8)
 
@@ -104,10 +104,10 @@ The collar is the point of greatest technical difficulty and the patent-defining
 The core of the platform. Four tiers, each escalating compute only when the tier below detects something worth investigating.
 
 ### Tier 0 — always-on IMU classification
-- **Runs on:** TDK ICM-45685 (main MCU asleep)
+- **Runs on:** STMicro LSM6DSV320X (main MCU asleep)
 - **Input:** 6-axis accel + gyro, 25–50 Hz
 - **Classes:** `rest / walk / trot / run / erratic / impact`
-- **Model:** decision tree or small NN via TDK Sensor Inference Framework
+- **Model:** MLC decision trees (8 trees, 256 nodes) + FSM (8 programmable state machines, e.g. for impact / collar-off detection), with ASC adapting parameters across motion regimes. The high-g (±320 g) channel feeds the impact branch directly.
 - **Power cost:** ~15 µA average
 - **Wake trigger:** class transition or sustained `erratic`
 - **Role:** activity minutes log; gate for higher tiers; baseline "is the dog doing something?" signal
@@ -253,7 +253,7 @@ Target: **< 5 mA 24-hour average.**
 
 | Sink | Average current | Assumptions |
 |---|---|---|
-| Tier 0 IMU always-on | ~15 µA | TDK ICM-45685 in low-power classifier mode |
+| Tier 0 IMU always-on | ~15 µA | LSM6DSV320X with MLC + FSM in low-power classifier mode |
 | Tier 1 inference | ~15 µA | 200 events/day × 8 mA × 80 ms |
 | Tier 2 inference | ~2 µA | 30 events/day × 25 mA × 200 ms |
 | BLE advertising | ~200 µA | 1 Hz adv interval |
@@ -288,7 +288,7 @@ GPS duty cycle is the dominant variable. Every other optimization is a rounding 
 
 | # | Decision | Owner | Blocking? |
 |---|---|---|---|
-| 1 | Bench-test Infineon IM73A135 PDM VAD vs. software VAD on ESP32 | AW | Rev 7 |
+| 1 | Bench-test Infineon IM73A135 PDM VAD vs. LSM6DSV320X MLC-driven wake (motion-triggered audio capture) — i.e. is a dedicated always-on audio path worth the BOM cost when the IMU can already gate I2S sampling? | AW | Rev 7 |
 | 2 | Confirm CC1101 can be removed (no firmware dependency) | AW | Rev 7 |
 | 3 | Battery size and enclosure finalization | AW + mechanical | Rev 7 |
 | 4 | Hub scope: required for v1 or v2? | AW | No (post-Rev-7) |
