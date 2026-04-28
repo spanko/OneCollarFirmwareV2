@@ -483,87 +483,203 @@ static check_result_t check_lora_silicon_rev(void)
 }
 
 // ===========================================================================
-// 8. GPS UART NMEA presence
+// 8. GPS UART NMEA presence — pin-discovery sweep
 // ===========================================================================
+/*
+ * Why this is a discovery routine, not a single fixed-pin check:
+ *
+ *   board.h flags BOARD_GPS_UART_TX_GPIO (17) and BOARD_GPS_UART_RX_GPIO (18)
+ *   as TBD pending Patrick's confirmation against the actual Rev 6 PCB, and
+ *   the V1 firmware carries a comment "try swapping 16/17" — strong evidence
+ *   that the wiring between the NEO-M8Q breakout's TX pin and the ESP32-S3
+ *   side was uncertain on early silicon. Rather than fail bring-up on a
+ *   guessed pin pair, sweep three plausible combinations and report which
+ *   one actually talks. The bench operator then makes a deliberate edit to
+ *   board.h based on what we observed; this code does NOT mutate board.h.
+ *
+ *   Attempt C (TX=16, RX=17) is gated on BOARD_HAS_SUBGHZ_RADIO == 0 because
+ *   GPIO 16 is also defined as BOARD_CC1101_GDO0_GPIO; driving it while
+ *   CC1101 is populated would contend with the radio's output. CC1101 is
+ *   intentionally not initialized anywhere earlier in this sketch so that
+ *   attempt C is free to drive GPIO 16 when the radio is depopulated.
+ */
+
+/* Hex nibble parser. Returns 0..15 on hex digit, -1 otherwise. */
+static int gps_hex_nibble(uint8_t c)
+{
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'A' && c <= 'F') return 10 + (c - 'A');
+    if (c >= 'a' && c <= 'f') return 10 + (c - 'a');
+    return -1;
+}
+
+/* Scan accumulated buffer for the first complete NMEA sentence beginning
+ * with "$G" whose checksum (XOR of bytes between '$' exclusive and '*'
+ * exclusive) matches the 2 hex digits following '*'. On success, copies the
+ * sentence text (from '$' through the 2 checksum digits, no CR/LF) into
+ * out_sentence and returns true. Does NOT require GPS lock — this is a
+ * "module is talking" check, not a fix-acquired check. */
+static bool gps_find_valid_nmea(const uint8_t *buf, int len,
+                                char *out_sentence, size_t out_size)
+{
+    /* Cap per-sentence search length defensively. NMEA-0183 caps sentences at
+     * 82 bytes including the leading '$' and trailing CR/LF; 100 leaves slack
+     * for non-conformant talkers without letting a missing '*' walk forever. */
+    const int max_sentence = 100;
+
+    for (int i = 0; i + 5 < len; i++) {
+        if (buf[i] != '$' || buf[i + 1] != 'G') continue;
+
+        int star = -1;
+        int hard_stop = i + max_sentence;
+        if (hard_stop > len) hard_stop = len;
+        for (int j = i + 2; j < hard_stop; j++) {
+            if (buf[j] == '*') { star = j; break; }
+            if (buf[j] == '$' || buf[j] == '\r' || buf[j] == '\n') break;
+        }
+        if (star < 0 || star + 2 >= len) continue;
+
+        int hi = gps_hex_nibble(buf[star + 1]);
+        int lo = gps_hex_nibble(buf[star + 2]);
+        if (hi < 0 || lo < 0) continue;
+        uint8_t expected = (uint8_t)((hi << 4) | lo);
+
+        uint8_t calc = 0;
+        for (int k = i + 1; k < star; k++) calc ^= buf[k];
+        if (calc != expected) continue;
+
+        int slen = (star + 3) - i;
+        if (slen >= (int)out_size) slen = (int)out_size - 1;
+        memcpy(out_sentence, &buf[i], slen);
+        out_sentence[slen] = '\0';
+        return true;
+    }
+    return false;
+}
+
+/* One attempt: configure UART with the given pins, listen up to 3 s for a
+ * checksum-valid "$G..." sentence, tear the driver down. Emits the per-attempt
+ * status line in the format the bring-up spec mandates. */
+static check_result_t gps_try_pins(char attempt_id, int tx_gpio, int rx_gpio,
+                                   int *out_pass_tx, int *out_pass_rx)
+{
+    const uart_port_t port = (uart_port_t)BOARD_GPS_UART_PORT;
+    const int rx_buf_sz = 2048;
+
+    uart_config_t cfg = {
+        .baud_rate  = BOARD_GPS_UART_BAUD,
+        .data_bits  = UART_DATA_8_BITS,
+        .parity     = UART_PARITY_DISABLE,
+        .stop_bits  = UART_STOP_BITS_1,
+        .flow_ctrl  = UART_HW_FLOWCTRL_DISABLE,
+        .source_clk = UART_SCLK_DEFAULT,
+    };
+
+    esp_err_t err = uart_driver_install(port, rx_buf_sz, 0, 0, NULL, 0);
+    if (err != ESP_OK) {
+        ESP_LOGI(TAG, "GPS attempt %c: TX=%d RX=%d -- FAIL "
+                      "(uart_driver_install -> %s)",
+                 attempt_id, tx_gpio, rx_gpio, esp_err_to_name(err));
+        return CHECK_FAIL;
+    }
+    err = uart_param_config(port, &cfg);
+    if (err != ESP_OK) {
+        ESP_LOGI(TAG, "GPS attempt %c: TX=%d RX=%d -- FAIL "
+                      "(uart_param_config -> %s)",
+                 attempt_id, tx_gpio, rx_gpio, esp_err_to_name(err));
+        uart_driver_delete(port);
+        return CHECK_FAIL;
+    }
+    err = uart_set_pin(port, tx_gpio, rx_gpio,
+                       UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
+    if (err != ESP_OK) {
+        ESP_LOGI(TAG, "GPS attempt %c: TX=%d RX=%d -- FAIL "
+                      "(uart_set_pin -> %s)",
+                 attempt_id, tx_gpio, rx_gpio, esp_err_to_name(err));
+        uart_driver_delete(port);
+        return CHECK_FAIL;
+    }
+
+    /* Accumulate up to ~1.5 KB of UART output across the 3 s window. NMEA
+     * sentences arrive in chunks split arbitrarily by the read; assembling
+     * before scanning avoids dropping a sentence that straddles two reads. */
+    uint8_t  accum[1536];
+    int      accum_len = 0;
+    char     sentence[100];
+    bool     found = false;
+    uint8_t  chunk[256];
+
+    const TickType_t deadline = xTaskGetTickCount() + pdMS_TO_TICKS(3000);
+    while (xTaskGetTickCount() < deadline && !found) {
+        int n = uart_read_bytes(port, chunk, sizeof(chunk), pdMS_TO_TICKS(200));
+        if (n <= 0) continue;
+
+        if (accum_len + n > (int)sizeof(accum)) {
+            int drop = (accum_len + n) - (int)sizeof(accum);
+            memmove(accum, accum + drop, accum_len - drop);
+            accum_len -= drop;
+        }
+        memcpy(accum + accum_len, chunk, n);
+        accum_len += n;
+
+        if (gps_find_valid_nmea(accum, accum_len, sentence, sizeof(sentence))) {
+            found = true;
+        }
+    }
+
+    uart_driver_delete(port);
+
+    if (found) {
+        ESP_LOGI(TAG, "GPS attempt %c: TX=%d RX=%d -- PASS (NMEA detected: %s)",
+                 attempt_id, tx_gpio, rx_gpio, sentence);
+        if (out_pass_tx && *out_pass_tx < 0) {
+            *out_pass_tx = tx_gpio;
+            *out_pass_rx = rx_gpio;
+        }
+        return CHECK_PASS;
+    }
+    ESP_LOGI(TAG, "GPS attempt %c: TX=%d RX=%d -- FAIL (no valid NMEA in 3s)",
+             attempt_id, tx_gpio, rx_gpio);
+    return CHECK_FAIL;
+}
+
 static check_result_t check_gps_nmea(void)
 {
 #if !BOARD_HAS_GPS
     report("gps", CHECK_SKIP, "BOARD_HAS_GPS == 0");
     return CHECK_SKIP;
 #else
-    /* CITE: uart_driver_install / uart_param_config / uart_set_pin / uart_read_bytes
-     *   https://docs.espressif.com/projects/esp-idf/en/latest/esp32s3/api-reference/peripherals/uart.html
-     *
-     * Baud rate: from board.h (BOARD_GPS_UART_BAUD = 9600). 9600-8-N-1 is the
-     * default for u-blox NEO-M8Q out of the factory; UNVERIFIED here against
-     * the NEO-M8Q datasheet but is the value the board.h author chose.
-     *
-     * NMEA framing: each sentence begins with '$' and ends with CR-LF. We just
-     * count '$' bytes — that is sufficient for "is the GPS talking?" without
-     * parsing. (NMEA-0183 spec is general protocol knowledge, not register-level
-     * detail; no datasheet citation required.) */
-    const uart_port_t port = (uart_port_t)BOARD_GPS_UART_PORT;
-    const int rx_buf_sz = 2048;
+    int pass_tx = -1, pass_rx = -1;
 
-    uart_config_t cfg = {
-        .baud_rate = BOARD_GPS_UART_BAUD,
-        .data_bits = UART_DATA_8_BITS,
-        .parity    = UART_PARITY_DISABLE,
-        .stop_bits = UART_STOP_BITS_1,
-        .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
-        .source_clk = UART_SCLK_DEFAULT,
-    };
-    esp_err_t err = uart_driver_install(port, rx_buf_sz, 0, 0, NULL, 0);
-    if (err != ESP_OK) {
-        report("gps", CHECK_FAIL, "uart_driver_install -> %s", esp_err_to_name(err));
-        return CHECK_FAIL;
-    }
-    err = uart_param_config(port, &cfg);
-    if (err != ESP_OK) {
-        report("gps", CHECK_FAIL, "uart_param_config -> %s", esp_err_to_name(err));
-        return CHECK_FAIL;
-    }
-    err = uart_set_pin(port,
-                       BOARD_GPS_UART_TX_GPIO, BOARD_GPS_UART_RX_GPIO,
-                       UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
-    if (err != ESP_OK) {
-        report("gps", CHECK_FAIL, "uart_set_pin -> %s", esp_err_to_name(err));
-        return CHECK_FAIL;
-    }
+    /* Attempt A: pin pair currently asserted by board.h (17, 18). */
+    gps_try_pins('A', BOARD_GPS_UART_TX_GPIO, BOARD_GPS_UART_RX_GPIO,
+                 &pass_tx, &pass_rx);
 
-    /* GPS cold-start time: UNVERIFIED — needs NEO-M8Q datasheet check.
-     * For "is the line talking?" we only need ~2 s of post-power data. The
-     * module emits NMEA at boot regardless of fix state, so we should see
-     * '$' bytes within seconds even with no antenna or no sky view. */
-    const TickType_t window = pdMS_TO_TICKS(2000);
-    TickType_t deadline = xTaskGetTickCount() + window;
-    int total_bytes = 0;
-    int dollar_count = 0;
-    uint8_t buf[256];
-    while (xTaskGetTickCount() < deadline) {
-        int n = uart_read_bytes(port, buf, sizeof(buf), pdMS_TO_TICKS(200));
-        if (n > 0) {
-            total_bytes += n;
-            for (int i = 0; i < n; i++) {
-                if (buf[i] == '$') dollar_count++;
-            }
-        }
-    }
+    /* Attempt B: TX/RX swap. */
+    gps_try_pins('B', BOARD_GPS_UART_RX_GPIO, BOARD_GPS_UART_TX_GPIO,
+                 &pass_tx, &pass_rx);
 
-    if (dollar_count > 0) {
-        report("gps", CHECK_PASS,
-               "NEO-M8Q UART%d @ %d -- %d byte(s), %d NMEA sentence-start(s) in 2 s "
-               "(tx=GPIO%d rx=GPIO%d -- TBDs in board.h, confirm with Patrick)",
-               BOARD_GPS_UART_PORT, BOARD_GPS_UART_BAUD,
-               total_bytes, dollar_count,
-               BOARD_GPS_UART_TX_GPIO, BOARD_GPS_UART_RX_GPIO);
+    /* Attempt C: GPIO 16 probe, only when CC1101 is depopulated. */
+#if BOARD_HAS_SUBGHZ_RADIO
+    ESP_LOGI(TAG, "GPS attempt C: TX=16 RX=17 -- SKIP (CC1101 populated)");
+#else
+    gps_try_pins('C', 16, 17, &pass_tx, &pass_rx);
+#endif
+
+    if (pass_tx >= 0) {
+        ESP_LOGI(TAG, "GPS PASS at TX=%d RX=%d -- "
+                      "board.h needs update if not 17/18",
+                 pass_tx, pass_rx);
+        report("gps", CHECK_PASS, "TX=%d RX=%d (UART%d @ %d)",
+               pass_tx, pass_rx, BOARD_GPS_UART_PORT, BOARD_GPS_UART_BAUD);
         return CHECK_PASS;
     }
+
+    ESP_LOGI(TAG, "GPS FAIL -- tried 17/18, 18/17, 16/17. "
+                  "Check connector and antenna.");
     report("gps", CHECK_FAIL,
-           "NEO-M8Q UART%d @ %d -- %d byte(s), no '$' seen in 2 s "
-           "(tx=GPIO%d rx=GPIO%d -- both TBD in board.h; try swap, verify breakout power)",
-           BOARD_GPS_UART_PORT, BOARD_GPS_UART_BAUD, total_bytes,
-           BOARD_GPS_UART_TX_GPIO, BOARD_GPS_UART_RX_GPIO);
+           "no valid NMEA on any pin combination (UART%d @ %d)",
+           BOARD_GPS_UART_PORT, BOARD_GPS_UART_BAUD);
     return CHECK_FAIL;
 #endif
 }
