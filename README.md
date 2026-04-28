@@ -21,20 +21,84 @@ capabilities exposed through their own HAL ifaces.
 
 ## Build
 
-ESP-IDF v5.x. Set up your environment per the IDF docs, then:
+ESP-IDF **v5.5 minimum**, **v6.0 preferred** (v6.0 enables `idf.py mcp-server`
+and the new-style peripheral driver components). Source `export.sh` from
+your IDF install before running any of the commands below:
 
 ```bash
-# Default — Rev 6
-idf.py build
-idf.py -p PORT flash monitor
-
-# Rev 7
-idf.py -DBOARD=rev7 build
-idf.py -p PORT flash monitor
+. ~/esp/v6.0/esp-idf/export.sh
 ```
 
-Switching revs requires a clean build (`idf.py fullclean`) because the
-sdkconfig overlay differs.
+### Build flags
+
+Two project-level CMake variables drive what gets built:
+
+| Flag       | Values         | Default | Selects                                         |
+|------------|----------------|---------|-------------------------------------------------|
+| `BOARD`    | `rev6` / `rev7`| `rev6`  | Pin map, IMU driver, sdkconfig overlay, model dir |
+| `BRINGUP`  | `ON` / `OFF`   | `OFF`   | Entry point: `OFF` = production `main.c`, `ON` = `main/bringup_${BOARD}.c` |
+
+Both flags are sticky once set — CMake caches them in `build/CMakeCache.txt`,
+so subsequent `idf.py build` calls don't need the `-D` until you change one.
+
+### Common commands
+
+```bash
+# Production firmware, Rev 6 (default)
+idf.py -DBOARD=rev6 build
+idf.py -p /dev/ttyACM0 flash monitor
+
+# Production firmware, Rev 7
+idf.py -DBOARD=rev7 build
+
+# Bring-up sketch, Rev 6 — runs every subsystem and prints PASS/FAIL/SKIP
+# per CLAUDE.md "Bring-up before features". Use this on first-silicon
+# boards before trusting any feature work.
+idf.py -DBOARD=rev6 -DBRINGUP=ON build flash monitor
+
+# Back to production after bring-up
+idf.py -DBRINGUP=OFF build
+```
+
+### When you need a clean build
+
+`idf.py fullclean` is required when:
+
+- **Switching `BOARD`** — the sdkconfig overlay is rev-specific, and Kconfig
+  values bake into header generation. Skipping fullclean leaves stale
+  `sdkconfig.h` from the previous rev.
+- **Switching `BRINGUP`** — the entry-point file changes, but more importantly
+  `REQUIRES` changes (the bring-up sketch pulls in `bt`, `esp_driver_i2c/spi/
+  gpio/uart`). Without fullclean the link line is stale.
+- **First build on a fresh checkout, or after `git submodule` changes in IDF.**
+
+If `fullclean` itself errors with "doesn't seem to be a CMake build directory"
+because a previous configure failed mid-flight, just `rm -rf build/`.
+
+### Multi-rev / multi-flag workflow
+
+There's only one `build/` directory and the cache picks the most recent
+`BOARD`/`BRINGUP`. If you genuinely need both Rev 6 production and Rev 6
+bring-up artifacts side by side, the simplest pattern is per-flavor build
+dirs via `-B`:
+
+```bash
+idf.py -B build_rev6_prod    -DBOARD=rev6 build
+idf.py -B build_rev6_bringup -DBOARD=rev6 -DBRINGUP=ON build
+```
+
+Each dir is independent; no `fullclean` dance between them.
+
+### Build sizes (reference)
+
+For Rev 6 against ESP-IDF v6.0, current scaffold:
+
+| Configuration | Binary | Free in app partition |
+|--------------|--------|------------------------|
+| Production (BRINGUP=OFF) | ~184 KB | 94% |
+| Bring-up (BRINGUP=ON, includes NimBLE) | ~580 KB | 81% |
+
+App partition is 3 MB; both fit with comfortable margin.
 
 ## Layout
 
