@@ -238,7 +238,7 @@ static check_result_t check_i2c_scan(void)
     ESP_LOGI(TAG, "i2c_scan: found %d device(s) [%s]", found_count, found_list);
 
     /* Required (Rev 6 always-populated): IMU @ 0x6A, fuel @ 0x36.
-     * Optional: BMP380 baro @ 0x77 (DNP unless hand-soldered). */
+     * Optional: BMP390 baro @ 0x77 (DNP unless hand-soldered). */
     if (saw_imu && saw_fuel) {
         report("i2c_scan", CHECK_PASS,
                "imu=0x%02X fuel=0x%02X baro=%s",

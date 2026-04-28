@@ -28,13 +28,46 @@ foreclose all of the above. Flag any such proposal explicitly.
 
 | Tier | Runs on | Trigger | Power | Output |
 |------|---------|---------|-------|--------|
-| 0 | ICM-45685 SmartMotion (Rev 7) / LSM6DSO32X MLC (Rev 6) | Always-on | ~15 µA | Activity class, wake gate |
+| 0 | LSM6DSV320X MLC + FSM (Rev 7) / LSM6DSO32X MLC (Rev 6) | Always-on | ~15 µA | Activity class, wake gate, FSM state events (Rev 7) |
+| 0.5 | LSM6DSV320X SFLP (Rev 7 only) | Always-on, sensor-internal | Negligible MCU cost | Chip-native gravity vector + game-rotation quaternion |
+| 0.5 | LSM6DSV320X high-g channel (Rev 7 only) | Always-on, threshold-driven | Sensor-only | Impact / fall events, separate from motion classification |
 | 1 | ESP32-S3 woken by Tier 0 | Class transition or sustained activity | ~8 mA × 80 ms/event | Motion-state vector |
 | 2 | ESP32-S3 + I2S mic (Rev 7 only) | Tier 1 ambiguity or vocalization signal | ~25 mA × 200 ms/event | Audio-fused motion-state |
 | 3 | BLE stream to phone | Low-confidence escalation or user request | High but rare | Raw 30-sec ring buffer for capture/labeling |
 
 Escalation is gated by Tier N confidence. Tier 2 does NOT run for every Tier 1
 event. Tier 3 is the exception path, not steady-state.
+
+### Tier 0 in the LSM6DSV320X era
+
+Rev 7's IMU exposes three Tier 0 / Tier 0.5 capabilities the original
+architecture didn't have access to. The decoupling principle is unchanged;
+what changes is the substrate underneath.
+
+- **MLC** carries over from Rev 6 unchanged in capacity (8 trees × 256 nodes).
+  Wake-on-activity classifier authored in Unico-GUI / MEMS Studio, deployed
+  as a UCF file in `models/rev7/`.
+- **FSM** is new. 8 programmable state machines plus the Activity Sensing
+  Configuration block. These execute at sensor ODR with no MCU involvement
+  and can encode temporal patterns the MLC trees can't (e.g. `rest →
+  sudden movement → rest within N samples`). Useful for impact-event
+  triggers and for compound wake patterns. Deployed alongside the MLC UCF.
+- **SFLP** outputs a gravity vector and game-rotation quaternion at sensor
+  power. The architectural consequence: Tier 1 features that depend on a
+  gravity-aligned reference frame don't need firmware-side fusion math.
+  Section 4.2 of `09_behavior_literature_synthesis.md` (rotation invariance
+  as a first-class design constraint) gets cheaper to satisfy on Rev 7.
+- **High-g channel** is a separate ±320 g accelerometer running parallel to
+  the ±16 g low-g channel. Impact detection, fall detection, and play
+  collision events become Tier 0.5 signals on their own data path — they
+  don't compete with motion classification for ODR or MLC tree budget.
+
+These are platform improvements, not architectural changes. Behavior
+recognition still runs on top of the motion-state vector; library entries
+still match against features; novelty detection still gates user-facing
+events. The new capabilities make the input to that pipeline richer
+(gravity-aligned, with separate impact channel) and free up Tier 1 compute
+budget.
 
 ## Blocation: location as a feature input, not a filter
 
@@ -77,6 +110,13 @@ distance to a centroid. TFLite-Micro-compatible implementations exist.
 synchronized IMU + audio (Rev 7) + phone video at full fidelity. Windowing
 happens at training time, not at capture time. Pose extraction is cloud-side
 and re-runnable as better pose models emerge.
+
+Sessions are **capability-tagged** at the firmware level — `data_logger`
+records which `BOARD_HAS_*` flags were true at capture, so the cloud
+pipeline correctly handles mixed-rev training: Rev 7 audio models only train
+on Rev 7 sessions, gravity features can train across both with provenance
+tracking, SFLP-derived features train against both Rev 7 directly and Rev 6
+via firmware-recomputed equivalents.
 
 Flag any proposal that closes off Option B: discarding raw streams after
 Tier 2 inference, downsampling at capture, only retaining label-aligned windows.

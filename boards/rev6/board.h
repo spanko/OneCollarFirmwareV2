@@ -4,7 +4,7 @@
  *
  * Hardware: ESP32-S3-WROOM-1-N16R8 + STMicro LSM6DSO32X (IMU) +
  *           MAX17048 (fuel gauge) + RFM95W (LoRa) + NEO-M8Q (GPS, external) +
- *           BMP380 (barometer, DNP).
+ *           BMP390 (barometer, DNP).
  *
  * Drivers consume capability flags (BOARD_HAS_*) to select code paths.
  * No GPIO numbers should appear outside this file.
@@ -32,7 +32,7 @@
 #define BOARD_HAS_IMU_SFLP      0   // chip-native gravity/quaternion — Rev 7+
 #define BOARD_HAS_IMU_MLC       1   // 8 trees, 256 nodes (DSO32X)
 #define BOARD_HAS_FUEL_GAUGE    1
-#define BOARD_HAS_BAROMETER     0   // BMP380 footprint present, DNP
+#define BOARD_HAS_BAROMETER     0   // BMP390 footprint present, DNP
 #define BOARD_HAS_AUDIO         0   // I2S MEMS mic — Rev 7+
 #define BOARD_HAS_VAD           0   // Infineon PDM+VAD — Rev 7 evaluation
 #define BOARD_HAS_GPS           1   // NEO-M8Q via 6-pin JST-SH external breakout
@@ -46,7 +46,7 @@
 // I2C bus — shared at 400 kHz fast mode
 //   IMU       0x6A   LSM6DSO32X
 //   Fuel      0x36   MAX17048
-//   Baro      0x77   BMP380 (DNP)
+//   Baro      0x77   BMP390 (DNP)
 // ---------------------------------------------------------------------------
 #define BOARD_I2C_PORT          0
 #define BOARD_I2C_SDA_GPIO      8
