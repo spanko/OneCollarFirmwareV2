@@ -38,7 +38,7 @@ This is the patent-defining architecture. Adding a behavior to the fleet is a li
 | **Firmware** | OneCollarFirmwareV2 (clean ESP-IDF rebuild, currently 3 files, no commits) becomes the Rev 7 firmware. Retarget from Rev 5-S3 to Rev 7 hardware. |
 | **Firmware repo structure** | TODO: restructure to house multiple hardware revisions in one repo, matching OneCollarHardware's pattern. No more `OneCollarFirmwareV3`. |
 | **BLE protocol** | Clean-sheet design on latest SDKs. v2 reliability layer (SACK, flow control, fragmentation) as inspiration — rebuild if good, don't carry code forward. |
-| **Rev 7 silicon** | Keep ESP32-S3-WROOM-1-N16R8, swap IMU to TDK ICM-45685, add I2S MEMS mic, evaluate Infineon PDM+VAD, drop CC1101 pending firmware check. |
+| **Rev 7 silicon** | Keep ESP32-S3-WROOM-1-N16R8, swap IMU to STMicro LSM6DSV320X (high-g + SFLP + MLC + FSM/ASC), add I2S MEMS mic, evaluate Infineon PDM+VAD, drop CC1101 pending firmware check. |
 | **Training pipeline** | **Option C.** Edge Impulse for fast unblock (Rev 7 gets a trained model shipped). Azure-native pipeline as target state built in parallel. Explicit metric-based cutover criteria, not calendar-based. |
 | **Data strategy** | Restart data collection with richer schema. Rev 6 becomes the intentional data-gathering platform; Rev 7 retrains against new sensors when it ships. |
 | **Training signal** | Option A (supervised classification from labels) as current approach. **Option B (multi-task learning with pose supervision) preserved as explicit evaluation track** — data collection must not close off B. |

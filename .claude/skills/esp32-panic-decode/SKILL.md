@@ -105,11 +105,11 @@ Inside the panic block, ESP-IDF prints the register dump and often the
 After classification + symbol resolution, write a short triage note:
 
 > **Cause class:** StoreProhibited, EXCVADDR=0x00000018
-> **Where:** `imu_icm45685_read_fifo` at `imu_icm45685.c:142`, called
+> **Where:** `imu_lsm6dsv320x_read_fifo` at `imu_lsm6dsv320x.c:142`, called
 > from task `imu_task` (Core 1, prio 5)
 > **Hypothesis (ranked):**
 >   1. `s_imu_handle` is NULL — init failed silently and the task wasn't
->      gated on it. Check `imu_icm45685_init` return path.
+>      gated on it. Check `imu_lsm6dsv320x_init` return path.
 >   2. Handle freed by a re-init on rev-detect change. Race between
 >      `bsp_init` and `imu_task` startup.
 >   3. Struct layout mismatch between rev6/rev7 build (less likely —
