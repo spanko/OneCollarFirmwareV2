@@ -19,3 +19,9 @@ models/*/*.tflite.tmp
 .env
 *.pem
 *.key
+
+# WSL / Windows download artifacts
+*:Zone.Identifier
+
+# Local Claude Code settings (per-developer permissions)
+.claude/settings.local.json
