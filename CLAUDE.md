@@ -97,6 +97,12 @@ It walks every subsystem and prints PASS/FAIL/SKIP to USB serial:
 Production driver bodies under `main/drivers/` graduate from the bring-up
 sketch's verified register sequences, not from speculative recall.
 
+Per-board session findings — what's been observed on real Rev 6 silicon,
+what's still open, what's been resolved — live in
+`docs/10_rev6_bringup_log.md`. Read it before proposing changes to
+`main/bringup_rev6.c` or starting a `main/drivers/` body. Not auto-loaded:
+it changes per session and would bloat context if it were.
+
 ## What NOT to do
 
 - Don't carry forward code from `OneCollarFirmware/` (V1). Lessons yes,
