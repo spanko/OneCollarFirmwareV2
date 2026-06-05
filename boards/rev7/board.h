@@ -77,7 +77,7 @@
 // Fuel gauge / charger — unchanged
 // ---------------------------------------------------------------------------
 #define BOARD_FUEL_ALRT_GPIO    3
-#define BOARD_CHARGER_STAT_GPIO 21
+#define BOARD_CHARGER_EN_N_GPIO 21  // active-low BQ25185 CE — PATRICK_TODO confirm
 
 // ---------------------------------------------------------------------------
 // SPI2 — LoRa only (CC1101 removed)

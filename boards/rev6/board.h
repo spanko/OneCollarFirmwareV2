@@ -3,15 +3,17 @@
  * @brief OneCollar Rev 6 — pin map and capability flags.
  *
  * Hardware: ESP32-S3-WROOM-1-N16R8 + STMicro LSM6DSO32X (IMU) +
- *           MAX17048 (fuel gauge) + RFM95W (LoRa) + NEO-M8Q (GPS, external) +
+ *           MAX17048 (fuel gauge) + BQ25185 (charger) + RFM95W (LoRa) +
+ *           NEO-M8Q (GPS, external 6-pin JST-SH breakout) + CC1101 (sub-GHz) +
  *           BMP390 (barometer, DNP).
  *
  * Drivers consume capability flags (BOARD_HAS_*) to select code paths.
  * No GPIO numbers should appear outside this file.
  *
- * NOTE: Pin assignments mirror the OneCollarFirmwareV2 scaffold's original
- * board.h (Rev 5-S3 era). Confirm with Patrick against current Rev 6 PCB
- * before committing to first-silicon firmware bring-up.
+ * Pin map is now grounded in Patrick's Rev 6 schematic (matches the
+ * OneCollar_HW_Bringup.ino sketch that successfully exercised first silicon
+ * on the bench). Pre-Rev-6 scaffold values from the Rev 5-S3 era have been
+ * replaced.
  */
 
 #pragma once
@@ -43,14 +45,17 @@
 #define BOARD_HAS_BUZZER        0
 
 // ---------------------------------------------------------------------------
-// I2C bus — shared at 400 kHz fast mode
+// I2C bus — shared
 //   IMU       0x6A   LSM6DSO32X
 //   Fuel      0x36   MAX17048
-//   Baro      0x77   BMP390 (DNP)
+//   Baro      0x77   BMP390 (DNP, hand-solder only)
+//
+// Bring-up firmware starts at 100 kHz for safety on first-silicon boards;
+// production drivers use BOARD_I2C_FREQ_HZ (400 kHz fast mode).
 // ---------------------------------------------------------------------------
 #define BOARD_I2C_PORT          0
-#define BOARD_I2C_SDA_GPIO      8
-#define BOARD_I2C_SCL_GPIO      9
+#define BOARD_I2C_SDA_GPIO      2
+#define BOARD_I2C_SCL_GPIO      1
 #define BOARD_I2C_FREQ_HZ       400000
 
 #define BOARD_IMU_I2C_ADDR      0x6A
@@ -62,37 +67,46 @@
 //   INT1 = MLC / wake-on-activity
 //   INT2 = data-ready @ 104 Hz
 // ---------------------------------------------------------------------------
-#define BOARD_IMU_INT1_GPIO     1
-#define BOARD_IMU_INT2_GPIO     2
+#define BOARD_IMU_INT1_GPIO     47
+#define BOARD_IMU_INT2_GPIO     46
 
 // ---------------------------------------------------------------------------
-// Fuel gauge alert / charger status
+// Fuel gauge alert / charger enable
+//   MAX17048 ALRT is open-drain, active-low.
+//   BQ25185 CE (CHGR-EN-N) is an active-low enable input driven by the MCU.
 // ---------------------------------------------------------------------------
-#define BOARD_FUEL_ALRT_GPIO    3   // active low
-#define BOARD_CHARGER_STAT_GPIO 21
+#define BOARD_FUEL_ALRT_GPIO    17  // active low input
+#define BOARD_CHARGER_EN_N_GPIO 21  // active low output to BQ25185 CE
 
 // ---------------------------------------------------------------------------
 // SPI2 — shared between LoRa (RFM95W) and CC1101
 // ---------------------------------------------------------------------------
 #define BOARD_SPI_HOST          2   // SPI2_HOST in ESP-IDF
-#define BOARD_SPI_SCK_GPIO      11
-#define BOARD_SPI_MOSI_GPIO     12
-#define BOARD_SPI_MISO_GPIO     13
+#define BOARD_SPI_SCK_GPIO      40
+#define BOARD_SPI_MOSI_GPIO     39
+#define BOARD_SPI_MISO_GPIO     38
 
-#define BOARD_LORA_CS_GPIO      10
-#define BOARD_LORA_DIO0_GPIO    7
-#define BOARD_LORA_RST_GPIO     15  // TBD — confirm with Patrick
+#define BOARD_LORA_CS_GPIO      41
+#define BOARD_LORA_RST_GPIO     42  // RFM95 RESET, active low
+#define BOARD_LORA_DIO0_GPIO    3
+#define BOARD_LORA_DIO1_GPIO    18
 
-#define BOARD_CC1101_CS_GPIO    14
-#define BOARD_CC1101_GDO0_GPIO  16  // TBD — confirm with Patrick
+#define BOARD_CC1101_CS_GPIO    45
+#define BOARD_CC1101_GDO0_GPIO  11  // GDO0 / ATEST
+#define BOARD_CC1101_GDO2_GPIO  12
 
 // ---------------------------------------------------------------------------
 // GPS (NEO-M8Q via UART1, external 6-pin JST-SH)
+//   *_TX_GPIO is the MCU-driven line (-> GPS RXD).
+//   *_RX_GPIO is the MCU-listening line (<- GPS TXD).
 // ---------------------------------------------------------------------------
-#define BOARD_GPS_UART_PORT     1
-#define BOARD_GPS_UART_TX_GPIO  17  // TBD — V1 firmware notes "try swapping" 16/17
-#define BOARD_GPS_UART_RX_GPIO  18  // TBD — confirm against Rev 6 PCB
-#define BOARD_GPS_UART_BAUD     9600
+#define BOARD_GPS_UART_PORT         1
+#define BOARD_GPS_UART_TX_GPIO      9   // MCU TX -> GPS RXD
+#define BOARD_GPS_UART_RX_GPIO      10  // GPS TXD -> MCU RX
+#define BOARD_GPS_UART_BAUD         9600
+#define BOARD_GPS_PPS_GPIO          7   // TIMEPULSE input
+#define BOARD_GPS_RESET_N_GPIO      8   // active low reset output
+#define BOARD_GPS_SAFEBOOT_N_GPIO   6   // active low SAFEBOOT_N output
 
 // ---------------------------------------------------------------------------
 // USB (native to ESP32-S3 — exposes /dev/ttyACM0 on Linux, COMx on Windows)
