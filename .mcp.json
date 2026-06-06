@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "esp-idf": {
+      "command": "bash",
+      "args": ["-c", "source \"$IDF_PATH/export.sh\" && idf.py mcp-server"]
+    }
+  }
+}
