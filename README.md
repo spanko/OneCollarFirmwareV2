@@ -214,9 +214,12 @@ work, in rough priority order:
 
 ## References
 
-- Project root: `02_onecollar_technical_architecture.md` (v0.1.2 with the
-  LSM6DSV320X correction)
-- Project root: `08_kickoff_brief.md`
+- Platform repo: `../onecollar-platform/docs/02-architecture.md` (canonical
+  architecture spec; includes the LSM6DSV320X correction and the Rev 7
+  Tier 0.5 update)
+- Platform repo: `../onecollar-platform/CLAUDE.md` + `decisions/decision-log.md`
+  (absorbed `08_kickoff_brief.md`; pre-existing decisions carried with
+  their original 2026-04-19 dates)
 - ST drivers: <https://github.com/STMicroelectronics> — search for
   `lsm6dso32x-pid` and `lsm6dsv320x-pid`. BSD-licensed, drop-in.
 

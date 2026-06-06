@@ -115,7 +115,7 @@ Carry-overs from Rev 6 unless noted.
 - Verify INT1 / INT2 routing matches Rev 6 (intent is to keep them stable
   so the IMU HAL wiring is rev-portable)
 
-## Power budget (Rev 7 target, per `02_onecollar_technical_architecture.md` §11)
+## Power budget (Rev 7 target, per `../onecollar-platform/docs/02-architecture.md` §11)
 
 24-hour average current: **< 5 mA** (stretch < 2 mA in home-dominant use).
 

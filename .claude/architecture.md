@@ -55,7 +55,7 @@ what changes is the substrate underneath.
 - **SFLP** outputs a gravity vector and game-rotation quaternion at sensor
   power. The architectural consequence: Tier 1 features that depend on a
   gravity-aligned reference frame don't need firmware-side fusion math.
-  Section 4.2 of `09_behavior_literature_synthesis.md` (rotation invariance
+  Section 4.2 of `../onecollar-platform/docs/behavior-literature.md` (rotation invariance
   as a first-class design constraint) gets cheaper to satisfy on Rev 7.
 - **High-g channel** is a separate ±320 g accelerometer running parallel to
   the ±16 g low-g channel. Impact detection, fall detection, and play
@@ -130,7 +130,7 @@ labeled by user to grow their library.
 
 Design choices must preserve the ability to flag unknown motion states for
 user review without flooding them with noise. Open-set recognition and
-learned-anomaly approaches are tracked in `09_behavior_literature_synthesis.md` §8
+learned-anomaly approaches are tracked in `../onecollar-platform/docs/behavior-literature.md` §8
 for v2 and beyond.
 
 ## Patent positioning
