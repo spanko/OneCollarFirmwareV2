@@ -1159,6 +1159,28 @@ static const struct ble_gatt_svc_def harness_svcs[] = {
     { 0 },
 };
 
+/* NimBLE assigns val_handles during ble_gatts_start() (kicked off implicitly
+ * when the host syncs), not when ble_gatts_add_svcs() returns — so this
+ * callback is where we get the real numbers. ble_hs_cfg.gatts_register_cb
+ * fires once per service/characteristic/descriptor; we filter for our four
+ * UUIDs so the GAP/GATT base service registrations don't add noise. */
+static void harness_gatts_register_cb(struct ble_gatt_register_ctxt *ctxt, void *arg)
+{
+    if (ctxt->op != BLE_GATT_REGISTER_OP_CHR) {
+        return;
+    }
+    const ble_uuid_t *u = ctxt->chr.chr_def->uuid;
+    const char *name = NULL;
+    if      (ble_uuid_cmp(u, &harness_cmd_rx_uuid.u)    == 0) name = "cmd_rx";
+    else if (ble_uuid_cmp(u, &harness_cmd_tx_uuid.u)    == 0) name = "cmd_tx";
+    else if (ble_uuid_cmp(u, &harness_event_tx_uuid.u)  == 0) name = "event_tx";
+    else if (ble_uuid_cmp(u, &harness_stream_tx_uuid.u) == 0) name = "stream_tx";
+    if (name == NULL) {
+        return;
+    }
+    ESP_LOGI(TAG, "harness: chr %-9s val_handle=0x%04x", name, ctxt->chr.val_handle);
+}
+
 static int bringup_ble_harness_register(void)
 {
     int rc = ble_gatts_count_cfg(harness_svcs);
@@ -1171,9 +1193,7 @@ static int bringup_ble_harness_register(void)
         ESP_LOGE(TAG, "harness: ble_gatts_add_svcs rc=%d", rc);
         return rc;
     }
-    ESP_LOGI(TAG, "harness: GATT service + 4 chars registered "
-                  "(cmd_tx=0x%04x event_tx=0x%04x stream_tx=0x%04x)",
-             harness_cmd_tx_handle, harness_event_tx_handle, harness_stream_tx_handle);
+    ESP_LOGI(TAG, "harness: GATT service + 4 chars queued; handles assigned at host sync");
     return 0;
 }
 
@@ -1255,8 +1275,9 @@ static check_result_t check_ble(void)
         report("ble", CHECK_FAIL, "nimble_port_init -> %s", esp_err_to_name(err));
         return CHECK_FAIL;
     }
-    ble_hs_cfg.reset_cb = bringup_ble_on_reset;
-    ble_hs_cfg.sync_cb  = bringup_ble_on_sync;
+    ble_hs_cfg.reset_cb          = bringup_ble_on_reset;
+    ble_hs_cfg.sync_cb           = bringup_ble_on_sync;
+    ble_hs_cfg.gatts_register_cb = harness_gatts_register_cb;
     ble_svc_gap_init();
     ble_svc_gatt_init();
     ble_svc_gap_device_name_set(BLE_DEVICE_NAME);
