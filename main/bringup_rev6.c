@@ -64,7 +64,9 @@
 #include "host/ble_hs.h"
 #include "host/util/util.h"
 #include "host/ble_gap.h"
+#include "host/ble_uuid.h"
 #include "services/gap/ble_svc_gap.h"
+#include "services/gatt/ble_svc_gatt.h"
 
 #include "board.h"
 
@@ -1046,7 +1048,135 @@ static check_result_t check_gps(void)
 #endif
 }
 
-// ---- BLE (advertise-only PASS; longer interactive testing via the phone) ---
+// ---- BLE (advertise + library-eval harness GATT service) ------------------
+//
+// The harness registers the four contract characteristics from
+// ../onecollar-platform/contracts/ble_protocol.md §GATT layout against the
+// NimBLE host stack. It exercises gates 1, 2, 4, 5 of the mobile-library
+// eval (see ../onecollar-platform/docs/11z-ble-library-eval.md) — MTU
+// negotiation, per-characteristic CCCD independence, LESC bonding
+// persistence, envelope passthrough. Gate 3 (TimeSync RTT precision)
+// needs nanopb runtime + the generated bindings linked in, which is a
+// follow-up commit.
+//
+// Wired into check_ble(); does NOT touch production drivers/ble_service.c.
+
+// UUIDs are little-endian in BLE_UUID128_INIT — bytes reversed from the
+// human-readable form in the contract.
+//   Service:   0cbe0000-1000-4001-a000-000000000001
+//   cmd_rx:    0cbe0001-...                (write, write-no-rsp)
+//   cmd_tx:    0cbe0002-...                (notify)
+//   event_tx:  0cbe0003-...                (notify)
+//   stream_tx: 0cbe0004-...                (notify)
+static const ble_uuid128_t harness_svc_uuid = BLE_UUID128_INIT(
+    0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xa0,
+    0x01, 0x40, 0x00, 0x10, 0x00, 0x00, 0xbe, 0x0c);
+static const ble_uuid128_t harness_cmd_rx_uuid = BLE_UUID128_INIT(
+    0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xa0,
+    0x01, 0x40, 0x00, 0x10, 0x01, 0x00, 0xbe, 0x0c);
+static const ble_uuid128_t harness_cmd_tx_uuid = BLE_UUID128_INIT(
+    0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xa0,
+    0x01, 0x40, 0x00, 0x10, 0x02, 0x00, 0xbe, 0x0c);
+static const ble_uuid128_t harness_event_tx_uuid = BLE_UUID128_INIT(
+    0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xa0,
+    0x01, 0x40, 0x00, 0x10, 0x03, 0x00, 0xbe, 0x0c);
+static const ble_uuid128_t harness_stream_tx_uuid = BLE_UUID128_INIT(
+    0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xa0,
+    0x01, 0x40, 0x00, 0x10, 0x04, 0x00, 0xbe, 0x0c);
+
+static uint16_t harness_cmd_tx_handle;
+static uint16_t harness_event_tx_handle;
+static uint16_t harness_stream_tx_handle;
+static uint16_t harness_conn_handle = BLE_HS_CONN_HANDLE_NONE;
+
+#define HARNESS_FRAME_MAX 600  /* MTU 512 - ATT(3) = 509 max ATT payload; round up */
+
+// cmd_rx write callback. Gate 5: echo the bytes back on cmd_tx unchanged so
+// the Flutter harness can assert bit-identical receive across the platform.
+// Other characteristics are notify-only and don't accept writes.
+static int harness_chr_access(uint16_t conn_handle, uint16_t attr_handle,
+                              struct ble_gatt_access_ctxt *ctxt, void *arg)
+{
+    if (ctxt->op != BLE_GATT_ACCESS_OP_WRITE_CHR) {
+        return 0;
+    }
+    uint8_t buf[HARNESS_FRAME_MAX];
+    uint16_t out_len = 0;
+    int rc = ble_hs_mbuf_to_flat(ctxt->om, buf, sizeof(buf), &out_len);
+    if (rc != 0) {
+        ESP_LOGW(TAG, "harness: cmd_rx flatten rc=%d", rc);
+        return rc;
+    }
+    if (harness_conn_handle == BLE_HS_CONN_HANDLE_NONE) {
+        ESP_LOGW(TAG, "harness: cmd_rx write with no active conn; dropping");
+        return 0;
+    }
+    struct os_mbuf *notif = ble_hs_mbuf_from_flat(buf, out_len);
+    if (notif == NULL) {
+        ESP_LOGE(TAG, "harness: cmd_tx mbuf alloc failed (%u bytes)", out_len);
+        return BLE_HS_ENOMEM;
+    }
+    rc = ble_gatts_notify_custom(harness_conn_handle, harness_cmd_tx_handle, notif);
+    if (rc != 0) {
+        ESP_LOGW(TAG, "harness: cmd_tx notify rc=%d", rc);
+    }
+    return 0;
+}
+
+static const struct ble_gatt_chr_def harness_chrs[] = {
+    {
+        .uuid = &harness_cmd_rx_uuid.u,
+        .access_cb = harness_chr_access,
+        .flags = BLE_GATT_CHR_F_WRITE | BLE_GATT_CHR_F_WRITE_NO_RSP,
+    },
+    {
+        .uuid = &harness_cmd_tx_uuid.u,
+        .access_cb = harness_chr_access,
+        .val_handle = &harness_cmd_tx_handle,
+        .flags = BLE_GATT_CHR_F_NOTIFY,
+    },
+    {
+        .uuid = &harness_event_tx_uuid.u,
+        .access_cb = harness_chr_access,
+        .val_handle = &harness_event_tx_handle,
+        .flags = BLE_GATT_CHR_F_NOTIFY,
+    },
+    {
+        .uuid = &harness_stream_tx_uuid.u,
+        .access_cb = harness_chr_access,
+        .val_handle = &harness_stream_tx_handle,
+        .flags = BLE_GATT_CHR_F_NOTIFY,
+    },
+    { 0 },
+};
+
+static const struct ble_gatt_svc_def harness_svcs[] = {
+    {
+        .type = BLE_GATT_SVC_TYPE_PRIMARY,
+        .uuid = &harness_svc_uuid.u,
+        .characteristics = harness_chrs,
+    },
+    { 0 },
+};
+
+static int bringup_ble_harness_register(void)
+{
+    int rc = ble_gatts_count_cfg(harness_svcs);
+    if (rc != 0) {
+        ESP_LOGE(TAG, "harness: ble_gatts_count_cfg rc=%d", rc);
+        return rc;
+    }
+    rc = ble_gatts_add_svcs(harness_svcs);
+    if (rc != 0) {
+        ESP_LOGE(TAG, "harness: ble_gatts_add_svcs rc=%d", rc);
+        return rc;
+    }
+    ESP_LOGI(TAG, "harness: GATT service + 4 chars registered "
+                  "(cmd_tx=0x%04x event_tx=0x%04x stream_tx=0x%04x)",
+             harness_cmd_tx_handle, harness_event_tx_handle, harness_stream_tx_handle);
+    return 0;
+}
+
 static int bringup_gap_event_handler(struct ble_gap_event *event, void *arg)
 {
     switch (event->type) {
@@ -1054,10 +1184,15 @@ static int bringup_gap_event_handler(struct ble_gap_event *event, void *arg)
         ESP_LOGI(TAG, "ble: connect %s status=%d",
                  event->connect.status == 0 ? "ESTABLISHED" : "FAILED",
                  event->connect.status);
-        if (event->connect.status == 0) s_ble_connected = true;
+        if (event->connect.status == 0) {
+            s_ble_connected = true;
+            harness_conn_handle = event->connect.conn_handle;
+        }
         return 0;
     case BLE_GAP_EVENT_DISCONNECT:
         ESP_LOGI(TAG, "ble: disconnect reason=%d", event->disconnect.reason);
+        harness_conn_handle = BLE_HS_CONN_HANDLE_NONE;
+        s_ble_connected = false;
         return 0;
     case BLE_GAP_EVENT_ADV_COMPLETE:
         ESP_LOGI(TAG, "ble: adv complete reason=%d", event->adv_complete.reason);
@@ -1122,7 +1257,14 @@ static check_result_t check_ble(void)
     }
     ble_hs_cfg.reset_cb = bringup_ble_on_reset;
     ble_hs_cfg.sync_cb  = bringup_ble_on_sync;
+    ble_svc_gap_init();
+    ble_svc_gatt_init();
     ble_svc_gap_device_name_set(BLE_DEVICE_NAME);
+    /* Harness GATT service. Failure is non-fatal per the firmware failure
+     * policy — advertising still comes up, the walk still completes. */
+    if (bringup_ble_harness_register() != 0) {
+        ESP_LOGW(TAG, "harness: registration failed; advertising will continue without it");
+    }
     nimble_port_freertos_init(bringup_ble_host_task);
 
     /* 10 s for advertising to come up — connection testing belongs in the REPL
