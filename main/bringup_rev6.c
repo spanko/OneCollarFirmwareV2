@@ -50,7 +50,12 @@
 #include "esp_log.h"
 #include "esp_system.h"
 #include "esp_rom_sys.h"
+#include "esp_timer.h"
 #include "nvs_flash.h"
+
+#include "pb_decode.h"
+#include "pb_encode.h"
+#include "ble_protocol.pb.h"
 
 #include "driver/i2c_master.h"
 #include "driver/spi_master.h"
@@ -1091,9 +1096,128 @@ static uint16_t harness_conn_handle = BLE_HS_CONN_HANDLE_NONE;
 
 #define HARNESS_FRAME_MAX 600  /* MTU 512 - ATT(3) = 509 max ATT payload; round up */
 
+// ---- Envelope + TimeSync (gate 3) -----------------------------------------
+// Wire framing per ../onecollar-platform/contracts/ble_protocol.md §Envelope:
+//   [length:2 LE][type:1][flags:1][txn_or_seq:2 LE][payload:N][crc16:2 LE]
+// CRC-16-CCITT-FALSE over bytes 0..6+N-1 (header + payload, not the CRC).
+
+#define ENV_TYPE_TO_COLLAR    0x01
+#define ENV_TYPE_FROM_COLLAR  0x02
+#define ENV_HEADER_SIZE       6
+#define ENV_TRAILER_SIZE      2
+#define ENV_OVERHEAD          (ENV_HEADER_SIZE + ENV_TRAILER_SIZE)
+
+static uint16_t crc16_ccitt_false(const uint8_t *buf, size_t len)
+{
+    uint16_t crc = 0xFFFF;
+    for (size_t i = 0; i < len; i++) {
+        crc ^= (uint16_t)buf[i] << 8;
+        for (int b = 0; b < 8; b++) {
+            crc = (crc & 0x8000) ? (uint16_t)((crc << 1) ^ 0x1021)
+                                 : (uint16_t)(crc << 1);
+        }
+    }
+    return crc;
+}
+
+typedef struct {
+    uint8_t        type;
+    uint8_t        flags;
+    uint16_t       txn_or_seq;
+    const uint8_t *payload;
+    uint16_t       payload_len;
+} env_frame_t;
+
+/* Returns 0 on success; negative on malformed/short/CRC-bad. */
+static int env_decode(const uint8_t *buf, uint16_t buf_len, env_frame_t *out)
+{
+    if (buf_len < ENV_OVERHEAD) return -1;
+    uint16_t plen = (uint16_t)buf[0] | ((uint16_t)buf[1] << 8);
+    if ((size_t)plen + ENV_OVERHEAD != buf_len) return -2;
+    uint16_t crc_recv = (uint16_t)buf[buf_len - 2] | ((uint16_t)buf[buf_len - 1] << 8);
+    uint16_t crc_calc = crc16_ccitt_false(buf, buf_len - 2);
+    if (crc_recv != crc_calc) return -3;
+    out->type        = buf[2];
+    out->flags       = buf[3];
+    out->txn_or_seq  = (uint16_t)buf[4] | ((uint16_t)buf[5] << 8);
+    out->payload     = buf + ENV_HEADER_SIZE;
+    out->payload_len = plen;
+    return 0;
+}
+
+/* Returns total bytes written, or negative on overflow. */
+static int env_encode(uint8_t type, uint8_t flags, uint16_t txn_or_seq,
+                       const uint8_t *payload, uint16_t payload_len,
+                       uint8_t *out_buf, size_t out_buf_size)
+{
+    if (out_buf_size < (size_t)payload_len + ENV_OVERHEAD) return -1;
+    out_buf[0] = (uint8_t)(payload_len & 0xFF);
+    out_buf[1] = (uint8_t)((payload_len >> 8) & 0xFF);
+    out_buf[2] = type;
+    out_buf[3] = flags;
+    out_buf[4] = (uint8_t)(txn_or_seq & 0xFF);
+    out_buf[5] = (uint8_t)((txn_or_seq >> 8) & 0xFF);
+    memcpy(out_buf + ENV_HEADER_SIZE, payload, payload_len);
+    uint16_t crc = crc16_ccitt_false(out_buf, ENV_HEADER_SIZE + payload_len);
+    out_buf[ENV_HEADER_SIZE + payload_len]     = (uint8_t)(crc & 0xFF);
+    out_buf[ENV_HEADER_SIZE + payload_len + 1] = (uint8_t)((crc >> 8) & 0xFF);
+    return ENV_HEADER_SIZE + payload_len + ENV_TRAILER_SIZE;
+}
+
+/* Gate 3 — collar-side TimeSync responder. t2 is captured immediately on
+ * entry; t3 is captured immediately before the protobuf encode so it's as
+ * close as possible to the actual wire-send time. RTT precision still
+ * depends mostly on the central library's t4 capture (the actual gate). */
+static int harness_handle_time_sync(uint16_t txn_or_seq,
+                                     const onecollar_ble_v1_TimeSyncRequest *req)
+{
+    uint64_t t2 = (uint64_t)esp_timer_get_time();
+
+    onecollar_ble_v1_FromCollar response = onecollar_ble_v1_FromCollar_init_zero;
+    response.status                            = onecollar_ble_v1_Status_STATUS_OK;
+    response.which_response                    = onecollar_ble_v1_FromCollar_time_sync_tag;
+    response.response.time_sync.phone_send_us  = req->phone_send_us;
+    response.response.time_sync.collar_recv_us = t2;
+    response.response.time_sync.collar_send_us = (uint64_t)esp_timer_get_time();
+
+    uint8_t pb_buf[128];
+    pb_ostream_t pb_stream = pb_ostream_from_buffer(pb_buf, sizeof(pb_buf));
+    if (!pb_encode(&pb_stream, onecollar_ble_v1_FromCollar_fields, &response)) {
+        ESP_LOGW(TAG, "harness: TimeSync pb_encode failed: %s", PB_GET_ERROR(&pb_stream));
+        return -1;
+    }
+
+    uint8_t env_buf[160];
+    int env_len = env_encode(ENV_TYPE_FROM_COLLAR, 0, txn_or_seq,
+                             pb_buf, (uint16_t)pb_stream.bytes_written,
+                             env_buf, sizeof(env_buf));
+    if (env_len < 0) {
+        ESP_LOGW(TAG, "harness: TimeSync env_encode rc=%d", env_len);
+        return -2;
+    }
+
+    struct os_mbuf *notif = ble_hs_mbuf_from_flat(env_buf, env_len);
+    if (notif == NULL) {
+        ESP_LOGE(TAG, "harness: TimeSync mbuf alloc failed (%d bytes)", env_len);
+        return -3;
+    }
+    int rc = ble_gatts_notify_custom(harness_conn_handle, harness_cmd_tx_handle, notif);
+    if (rc != 0) {
+        ESP_LOGW(TAG, "harness: TimeSync notify rc=%d", rc);
+        return -4;
+    }
+    ESP_LOGI(TAG, "harness: TimeSync responded txn=%u t2=%llu t3=%llu",
+             txn_or_seq, (unsigned long long)t2,
+             (unsigned long long)response.response.time_sync.collar_send_us);
+    return 0;
+}
+
 // cmd_rx write callback.
-//   - Gate 5: echo all bytes back on cmd_tx unchanged so the Flutter harness
-//     can assert bit-identical receive (envelope passthrough).
+//   - Gate 3: if the bytes parse as a valid envelope wrapping a
+//     ToCollar.time_sync, build a TimeSyncResponse and notify on cmd_tx.
+//     No echo in that path — the response IS the reply.
+//   - Gate 5: any other bytes are echoed verbatim on cmd_tx (envelope
+//     passthrough; the Flutter harness asserts bit-identical receive).
 //   - Gate 2 full: a one-byte 0xFF write also triggers one notify each on
 //     event_tx and stream_tx with distinct marker payloads, so all three
 //     notify characteristics fire from a single stimulus.
@@ -1114,6 +1238,25 @@ static int harness_chr_access(uint16_t conn_handle, uint16_t attr_handle,
     if (harness_conn_handle == BLE_HS_CONN_HANDLE_NONE) {
         ESP_LOGW(TAG, "harness: cmd_rx write with no active conn; dropping");
         return 0;
+    }
+
+    /* Gate 3 — try envelope decode. A valid envelope of type ToCollar that
+     * carries a time_sync request is handled here; the TimeSyncResponse
+     * notify replaces the gate-5 echo for that path. Anything that fails to
+     * decode as an envelope, or whose type/oneof we don't recognize, falls
+     * through to the echo (gate 5 still works for raw byte patterns). */
+    if (out_len >= ENV_OVERHEAD) {
+        env_frame_t frame;
+        if (env_decode(buf, out_len, &frame) == 0 &&
+            frame.type == ENV_TYPE_TO_COLLAR) {
+            onecollar_ble_v1_ToCollar to = onecollar_ble_v1_ToCollar_init_zero;
+            pb_istream_t pbin = pb_istream_from_buffer(frame.payload, frame.payload_len);
+            if (pb_decode(&pbin, onecollar_ble_v1_ToCollar_fields, &to) &&
+                to.which_request == onecollar_ble_v1_ToCollar_time_sync_tag) {
+                harness_handle_time_sync(frame.txn_or_seq, &to.request.time_sync);
+                return 0;  /* handled; suppress the echo path */
+            }
+        }
     }
 
     /* Gate 2 full — one-byte 0xFF triggers ping notifies on event_tx and

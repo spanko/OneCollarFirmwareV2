@@ -126,13 +126,20 @@ if(BRINGUP)
         esp_driver_gpio
         esp_driver_uart
         esp_driver_usb_serial_jtag
+        nanopb
     )
+    # Generated BLE protocol bindings (nanopb). Source: ../onecollar-platform/
+    # contracts/ble_protocol.proto + .options, regenerated via
+    # ../onecollar-platform/tools/codegen/gen_nanopb.sh. Used by the
+    # library-eval harness in bringup_rev6.c (gate 3 TimeSync).
+    list(APPEND SRCS ble/ble_protocol.pb.c)
 endif()
 
 idf_component_register(
     SRCS ${SRCS}
     INCLUDE_DIRS
         .
+        ble
         hal
         drivers
         ${_OC_PROJECT_ROOT}/boards/${BOARD}
