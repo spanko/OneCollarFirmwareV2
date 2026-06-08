@@ -1370,6 +1370,8 @@ static int bringup_ble_harness_register(void)
     return 0;
 }
 
+static void bringup_ble_start_adv(void);  /* defined below; called from disconnect */
+
 static int bringup_gap_event_handler(struct ble_gap_event *event, void *arg)
 {
     switch (event->type) {
@@ -1386,6 +1388,13 @@ static int bringup_gap_event_handler(struct ble_gap_event *event, void *arg)
         ESP_LOGI(TAG, "ble: disconnect reason=%d", event->disconnect.reason);
         harness_conn_handle = BLE_HS_CONN_HANDLE_NONE;
         s_ble_connected = false;
+        /* Restart advertising so the central can reconnect — gate 4 of
+         * the mobile-library eval specifically requires kill-app +
+         * reconnect to succeed without a re-pair prompt, which is
+         * impossible if the collar goes silent after the first
+         * connection. NimBLE intentionally stops advertising on
+         * connect; we re-arm here. */
+        bringup_ble_start_adv();
         return 0;
     case BLE_GAP_EVENT_ADV_COMPLETE:
         ESP_LOGI(TAG, "ble: adv complete reason=%d", event->adv_complete.reason);
