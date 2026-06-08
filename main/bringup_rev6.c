@@ -1171,9 +1171,16 @@ static int env_encode(uint8_t type, uint8_t flags, uint16_t txn_or_seq,
 static int harness_handle_time_sync(uint16_t txn_or_seq,
                                      const onecollar_ble_v1_TimeSyncRequest *req)
 {
+    /* FromCollar is a ~5 KB oneof union (Capabilities is the largest variant —
+     * 32 × (32-byte id + 128-byte unlock_hint + state) ≈ 5300 bytes) and the
+     * NimBLE host task stack is 4 KB, so this MUST NOT live on the stack.
+     * The handler is single-threaded (called from the NimBLE host task), so
+     * a static buffer is safe and avoids the heap-alloc cost. */
+    static onecollar_ble_v1_FromCollar response;
+    memset(&response, 0, sizeof(response));
+
     uint64_t t2 = (uint64_t)esp_timer_get_time();
 
-    onecollar_ble_v1_FromCollar response = onecollar_ble_v1_FromCollar_init_zero;
     response.status                            = onecollar_ble_v1_Status_STATUS_OK;
     response.which_response                    = onecollar_ble_v1_FromCollar_time_sync_tag;
     response.response.time_sync.phone_send_us  = req->phone_send_us;
@@ -1240,16 +1247,18 @@ static int harness_chr_access(uint16_t conn_handle, uint16_t attr_handle,
         return 0;
     }
 
-    /* Gate 3 — try envelope decode. A valid envelope of type ToCollar that
-     * carries a time_sync request is handled here; the TimeSyncResponse
-     * notify replaces the gate-5 echo for that path. Anything that fails to
-     * decode as an envelope, or whose type/oneof we don't recognize, falls
-     * through to the echo (gate 5 still works for raw byte patterns). */
+    /* Gate 3 — envelope decode → ToCollar protobuf → TimeSync dispatch.
+     * Anything that doesn't decode cleanly or whose oneof tag we don't
+     * recognize falls through to the gate-5 echo path; that lets raw byte
+     * patterns (DEADBEEF etc.) still round-trip for the passthrough test.
+     * `to` is static because the ToCollar oneof unions to ~340 B and we'd
+     * rather not chase stack growth as new request variants are added. */
     if (out_len >= ENV_OVERHEAD) {
         env_frame_t frame;
         if (env_decode(buf, out_len, &frame) == 0 &&
             frame.type == ENV_TYPE_TO_COLLAR) {
-            onecollar_ble_v1_ToCollar to = onecollar_ble_v1_ToCollar_init_zero;
+            static onecollar_ble_v1_ToCollar to;
+            memset(&to, 0, sizeof(to));
             pb_istream_t pbin = pb_istream_from_buffer(frame.payload, frame.payload_len);
             if (pb_decode(&pbin, onecollar_ble_v1_ToCollar_fields, &to) &&
                 to.which_request == onecollar_ble_v1_ToCollar_time_sync_tag) {
