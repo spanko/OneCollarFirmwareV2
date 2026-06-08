@@ -1460,6 +1460,24 @@ static check_result_t check_ble(void)
     ble_hs_cfg.reset_cb          = bringup_ble_on_reset;
     ble_hs_cfg.sync_cb           = bringup_ble_on_sync;
     ble_hs_cfg.gatts_register_cb = harness_gatts_register_cb;
+    /* Security Manager runtime flags — these are NOT set by the Kconfig
+     * options. The Kconfig flags compile in LESC + NVS persistence; the
+     * runtime fields below have to be set explicitly or NimBLE defaults
+     * to sm_bonding=0, which makes pairing succeed once but never
+     * persist (HCI 0x13 on every reconnect, exactly what gate 4 hit).
+     *   - io_cap = NO_IO: collar has no display / keyboard → Just Works
+     *   - sm_bonding = 1: request bonding during pair so LTK is stored
+     *   - sm_mitm = 0: no MITM protection (no display means we can't)
+     *   - sm_sc = 1: LESC required (Kconfig already permits legacy
+     *     fallback if peer can't do SC)
+     *   - key_dist: both sides distribute the encryption LTK and the
+     *     identity (IRK) so the bond is reusable across address rotations */
+    ble_hs_cfg.sm_io_cap         = BLE_HS_IO_NO_INPUT_OUTPUT;
+    ble_hs_cfg.sm_bonding        = 1;
+    ble_hs_cfg.sm_mitm           = 0;
+    ble_hs_cfg.sm_sc             = 1;
+    ble_hs_cfg.sm_our_key_dist   = BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID;
+    ble_hs_cfg.sm_their_key_dist = BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID;
     ble_svc_gap_init();
     ble_svc_gatt_init();
     ble_svc_gap_device_name_set(BLE_DEVICE_NAME);
