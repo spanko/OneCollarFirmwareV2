@@ -1091,8 +1091,12 @@ static uint16_t harness_conn_handle = BLE_HS_CONN_HANDLE_NONE;
 
 #define HARNESS_FRAME_MAX 600  /* MTU 512 - ATT(3) = 509 max ATT payload; round up */
 
-// cmd_rx write callback. Gate 5: echo the bytes back on cmd_tx unchanged so
-// the Flutter harness can assert bit-identical receive across the platform.
+// cmd_rx write callback.
+//   - Gate 5: echo all bytes back on cmd_tx unchanged so the Flutter harness
+//     can assert bit-identical receive (envelope passthrough).
+//   - Gate 2 full: a one-byte 0xFF write also triggers one notify each on
+//     event_tx and stream_tx with distinct marker payloads, so all three
+//     notify characteristics fire from a single stimulus.
 // Other characteristics are notify-only and don't accept writes.
 static int harness_chr_access(uint16_t conn_handle, uint16_t attr_handle,
                               struct ble_gatt_access_ctxt *ctxt, void *arg)
@@ -1111,6 +1115,26 @@ static int harness_chr_access(uint16_t conn_handle, uint16_t attr_handle,
         ESP_LOGW(TAG, "harness: cmd_rx write with no active conn; dropping");
         return 0;
     }
+
+    /* Gate 2 full — one-byte 0xFF triggers ping notifies on event_tx and
+     * stream_tx. Distinct marker bytes per channel so the harness can
+     * confirm each notify arrives on its own characteristic. */
+    if (out_len == 1 && buf[0] == 0xFF) {
+        static const uint8_t event_ping[]  = {0xE0, 0x01};
+        static const uint8_t stream_ping[] = {0xE0, 0x02};
+        struct os_mbuf *evt = ble_hs_mbuf_from_flat(event_ping, sizeof(event_ping));
+        if (evt != NULL) {
+            int erc = ble_gatts_notify_custom(harness_conn_handle, harness_event_tx_handle, evt);
+            if (erc != 0) ESP_LOGW(TAG, "harness: event_tx notify rc=%d", erc);
+        }
+        struct os_mbuf *stm = ble_hs_mbuf_from_flat(stream_ping, sizeof(stream_ping));
+        if (stm != NULL) {
+            int src = ble_gatts_notify_custom(harness_conn_handle, harness_stream_tx_handle, stm);
+            if (src != 0) ESP_LOGW(TAG, "harness: stream_tx notify rc=%d", src);
+        }
+    }
+
+    /* Gate 5 — echo cmd_rx bytes verbatim on cmd_tx. */
     struct os_mbuf *notif = ble_hs_mbuf_from_flat(buf, out_len);
     if (notif == NULL) {
         ESP_LOGE(TAG, "harness: cmd_tx mbuf alloc failed (%u bytes)", out_len);
@@ -1127,7 +1151,13 @@ static const struct ble_gatt_chr_def harness_chrs[] = {
     {
         .uuid = &harness_cmd_rx_uuid.u,
         .access_cb = harness_chr_access,
-        .flags = BLE_GATT_CHR_F_WRITE | BLE_GATT_CHR_F_WRITE_NO_RSP,
+        /* WRITE_ENC requires the link to be encrypted before writes are
+         * accepted, which forces a pair flow on first connection. With
+         * CONFIG_BT_NIMBLE_SM_SC=y and NVS persistence on (gate 4),
+         * subsequent connections from the same bonded central reuse the
+         * stored LTK and skip re-pairing. */
+        .flags = BLE_GATT_CHR_F_WRITE | BLE_GATT_CHR_F_WRITE_NO_RSP
+               | BLE_GATT_CHR_F_WRITE_ENC,
     },
     {
         .uuid = &harness_cmd_tx_uuid.u,
