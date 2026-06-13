@@ -13,7 +13,11 @@
  *      Recommend LittleFS for V1 — robust and ESP-IDF supported.
  *   2. Implement session header write at session_open.
  *   3. Implement frame appender with stream_id tag.
- *   4. Implement BLE upload path: session list, session metadata fetch, frame stream.
+ *   4. Implement the session upload surface defined by the BLE contract:
+ *      ListSessionsRequest -> SessionList, ReadSessionRequest -> SessionChunk
+ *      series, DeleteSessionRequest (../onecollar-platform/contracts/
+ *      ble_protocol.proto §Session capture). drivers/ble_service.c already
+ *      dispatches these and returns STATUS_NOT_READY until this lands.
  *   5. Per-session size cap and rotation policy.
  */
 
@@ -23,6 +27,7 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 #include <string.h>
+#include <sys/time.h>
 
 static const char *TAG = "data_logger";
 
@@ -84,7 +89,19 @@ esp_err_t data_logger_session_open(datalog_session_header_t *out_header)
     out_header->header_version = DATALOG_HEADER_VERSION;
     out_header->hw_revision = BOARD_HW_REV;
     out_header->session_id = (uint64_t)esp_timer_get_time() * 1000ULL;
-    out_header->wall_clock_start_ms = 0;  // TODO: set if BLE-time-sync available
+    /* The system clock is UTC iff the app has issued SetWallClockRequest
+     * (contract opcode, handled in drivers/ble_service.c via settimeofday).
+     * An unset RTC reads as 1970; anything before 2020 means "no sync yet"
+     * and the header keeps the schema's documented 0. */
+    {
+        struct timeval tv;
+        if (gettimeofday(&tv, NULL) == 0 && tv.tv_sec > 1577836800 /* 2020-01-01 */) {
+            out_header->wall_clock_start_ms =
+                (uint64_t)tv.tv_sec * 1000ULL + (uint64_t)tv.tv_usec / 1000ULL;
+        } else {
+            out_header->wall_clock_start_ms = 0;
+        }
+    }
     out_header->capability_flags = compute_capabilities();
 
     {

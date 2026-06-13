@@ -111,28 +111,27 @@ else()
     list(APPEND SRCS drivers/audio_iface_stub.c)
 endif()
 
-# REQUIRES list. The bring-up sketch calls NimBLE and the new-style peripheral
-# drivers directly (advertise + accept, i2c_master, spi_master, gpio, uart).
-# The production main.c reaches those through drivers/*.c wrappers that may
-# hide the deps, so we only require these components when BRINGUP is on.
+# REQUIRES list. NimBLE (bt) + nanopb + the generated protocol bindings are
+# needed by BOTH entry points now: the production drivers/ble_service.c and
+# the bring-up harness. The per-peripheral esp_driver_* components are still
+# bring-up-only — the sketch calls i2c_master/spi/gpio/uart directly, while
+# production main.c reaches hardware through drivers/*.c wrappers.
 # ESP-IDF v6 split the old monolithic `driver` into per-peripheral
 # `esp_driver_*` components -- each direct header include needs its own.
-set(REQUIRES_LIST nvs_flash esp_timer driver)
+set(REQUIRES_LIST nvs_flash esp_timer driver bt nanopb esp_app_format)
+# Generated BLE protocol bindings (nanopb). Source: ../onecollar-platform/
+# contracts/ble_protocol.proto + .options, regenerated via
+# ../onecollar-platform/tools/codegen/gen_nanopb.sh. Consumed by
+# drivers/ble_service.c (production) and bringup_rev6.c (eval harness).
+list(APPEND SRCS ble/ble_protocol.pb.c)
 if(BRINGUP)
     list(APPEND REQUIRES_LIST
-        bt
         esp_driver_i2c
         esp_driver_spi
         esp_driver_gpio
         esp_driver_uart
         esp_driver_usb_serial_jtag
-        nanopb
     )
-    # Generated BLE protocol bindings (nanopb). Source: ../onecollar-platform/
-    # contracts/ble_protocol.proto + .options, regenerated via
-    # ../onecollar-platform/tools/codegen/gen_nanopb.sh. Used by the
-    # library-eval harness in bringup_rev6.c (gate 3 TimeSync).
-    list(APPEND SRCS ble/ble_protocol.pb.c)
 endif()
 
 idf_component_register(
