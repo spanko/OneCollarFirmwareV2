@@ -194,6 +194,44 @@ issue downstream of host-side `IMU STREAM` visualization).
 
 ---
 
+### 2026-06-13 — Production firmware on silicon; i2c/fuel/imu drivers graduated
+
+**What changed.** Moved off the bring-up sketch: flashed the **production**
+entry (`idf.py -DBOARD=rev6 -DBRINGUP=OFF`, `main.c`) and brought the first
+real `main/drivers/` bodies up against live silicon, verified end-to-end
+through the production Flutter app over BLE (platform decision log
+2026-06-13).
+
+**Drivers graduated from the verified bring-up register sequences:**
+- `i2c_bus.c` — real `i2c_master` impl (recursive mutex, per-address device
+  cache). Proven by the fuel read working.
+- `fuel_max17048.c` — `fuel_read()`: 4.198 V / 98% / **charging** (CRATE
+  charge-direction matched the green charger LED — first bench confirmation
+  of that path). VCELL/SOC carry over from the `lsm6dso32x-fs-xl-scale`-era
+  bench numbers.
+- `imu_lsm6dso32x.c` — `imu_init` (WHO_AM_I 0x6C + CTRL config) and
+  `imu_read_sample` (12-byte burst at 0x22, ±4 g / 500 dps). Gravity tracks
+  the correct axis at ~1000 mg, gyro responds to rotation. Used the same
+  `CTRL1_XL=0x40` (±4 g) that resolved `lsm6dso32x-fs-xl-scale`.
+  **`imu_sample_t` accel/gyro widened int16→int32** (500 dps exceeds int16
+  mdps).
+
+**Still stubbed (return paths, not bugs):** IMU FIFO + INT1 MLC routing
+(the `imu_init` TODO — Tier 0 wake), session capture persistence in
+`data_logger`, GPS/LoRa telemetry. BLE handlers for these correctly return
+`STATUS_NOT_READY`.
+
+**Workflow gotcha (flashing the running app).** Once the production app is
+running, esptool's RTS/DTR auto-reset-into-download-mode is dropped by usbip
+(`OSError errno 62` on the TIOCMBIC toggle) — the first flash of a
+fresh-booted board works, later ones fail. **Use
+`usbipd attach --wsl --busid <id> --auto-attach`** (already the documented
+requirement in the 2026-06-05 session) — it survives the reset
+re-enumeration. If you forgot and got stuck: `usbipd detach` + re-`attach`
+restored it; manual BOOT+EN + esptool `--before no_reset` is the fallback.
+
+---
+
 *Drafted 2026-06-05 after the first Rev 6 bring-up session. Append new
 sessions chronologically below this line. Promote cross-session patterns
 to the "Open findings" section at the top.*

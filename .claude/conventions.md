@@ -69,21 +69,33 @@ config alone. Compile-time `BOARD=rev7` selects which peripherals are
 
 ## BLE protocol
 
-- **GATT service**: Nordic UART Service (NUS), UUIDs preserved from V1
-  for app-side compatibility:
-  - Service: `6E400001-B5A3-F393-E0A9-E50E24DCCA9E`
-  - RX (app→collar): `6E400002-...`
-  - TX (collar→app): `6E400003-...`
-- **MTU**: re-negotiate to 512 on every connection. Default 23/20-byte
-  payload is insufficient.
-- **Packet framing** (clean-sheet for V2; V1's reliability layer ideas as
-  inspiration only — do not port C# code from `WearDoggoTrainer/`):
-  ```
-  [type(1)] [seq(1)] [len_lo(1)] [len_hi(1)] [payload(N)] [checksum(1)]
-  ```
-  Single-byte XOR checksum. Little-endian length. Payload up to MTU-3.
-- Reliability layer (SACK, flow control, fragmentation) to be rebuilt
-  fresh against latest ESP-IDF NimBLE. Design first, implement second.
+**The protocol is owned by the contract, not this file.** Source of truth:
+`../onecollar-platform/contracts/ble_protocol.proto` (payload schema) +
+`ble_protocol.md` (envelope, GATT layout, handshake). The NUS-based scheme
+this section used to describe is **superseded** — V1's NUS service and
+single-byte-XOR framing are prior art only (`repos/_reference/`). Implemented
+in [`main/drivers/ble_service.c`](../main/drivers/ble_service.c) over the
+nanopb bindings in `main/ble/`; flashed + verified on Rev 6 silicon
+2026-06-13 (platform decision log).
+
+What's actually shipped (summary — defer to the contract for bytes):
+- **Custom GATT service** `0CBE0000-…`, four characteristics: `cmd_rx`
+  (write, encrypted), `cmd_tx`/`event_tx`/`stream_tx` (notify). Not NUS.
+- **MTU** renegotiated to 512 on connect.
+- **Envelope** `[len:2][type:1][flags:1][txn:2][payload:N][crc16:2]`,
+  **CRC-16-CCITT-FALSE** (not XOR — the V1 single-byte XOR on a 16-bit length
+  was explicitly flagged as a mistake not to repeat). Payloads are protobuf
+  (`ToCollar`/`FromCollar`/`Event`/`ImuBatch`), never hand-rolled bytes.
+- **LESC + NVS bonding** (`ble_bond`); `cmd_rx` requires encryption.
+- **Fragmentation** via the envelope `MORE_FRAGMENTS` flag for responses that
+  exceed one MTU (e.g. `Capabilities`); request/response correlation by the
+  envelope `txn` id.
+- Regenerate bindings after any `.proto` change — see platform CLAUDE.md
+  "Contract regeneration". Never hand-edit `ble_protocol.pb.{c,h}`.
+
+Still to build (return `STATUS_NOT_READY` today): IMU streaming, session
+list/read/delete, GPS/LoRa telemetry. The SACK/flow-control reliability layer
+remains a deferred contract item.
 
 ## Sensor sampling
 
