@@ -46,6 +46,7 @@
 #include "data_logger.h"
 #include "hal/imu_iface.h"
 #include "drivers/ble_service.h"
+#include "drivers/fuel.h"
 
 static const char *TAG = "oc.ble";
 
@@ -342,6 +343,31 @@ static void handle_get_mtu_status(uint16_t txn_id)
     ble_send_from_collar(txn_id, &s_resp);
 }
 
+static void handle_get_battery(uint16_t txn_id)
+{
+    fuel_status_t fs;
+    if (fuel_read(&fs) != ESP_OK) {
+        ble_send_status(txn_id, onecollar_ble_v1_Status_STATUS_NOT_READY);
+        return;
+    }
+    memset(&s_resp, 0, sizeof(s_resp));
+    s_resp.status         = onecollar_ble_v1_Status_STATUS_OK;
+    s_resp.which_response = onecollar_ble_v1_FromCollar_battery_tag;
+    onecollar_ble_v1_BatteryStatus *b = &s_resp.response.battery;
+    b->percentage   = fs.soc_percent;
+    b->voltage_mv   = fs.voltage_mv;
+    b->alert_active = fs.alert_active;
+    b->alert_code   = 0;  /* no firmware alert codes defined yet */
+    switch (fs.charge) {
+    case FUEL_CHARGE_CHARGING:    b->charge = onecollar_ble_v1_ChargeState_CHARGE_CHARGING;    break;
+    case FUEL_CHARGE_DISCHARGING: b->charge = onecollar_ble_v1_ChargeState_CHARGE_DISCHARGING; break;
+    case FUEL_CHARGE_FULL:        b->charge = onecollar_ble_v1_ChargeState_CHARGE_FULL;        break;
+    case FUEL_CHARGE_CRITICAL:    b->charge = onecollar_ble_v1_ChargeState_CHARGE_CRITICAL;    break;
+    default:                      b->charge = onecollar_ble_v1_ChargeState_CHARGE_UNKNOWN;     break;
+    }
+    ble_send_from_collar(txn_id, &s_resp);
+}
+
 static void handle_get_imu_snapshot(uint16_t txn_id)
 {
     imu_sample_t sample;
@@ -550,6 +576,9 @@ static void dispatch_to_collar(uint16_t txn_id, const onecollar_ble_v1_ToCollar 
     case onecollar_ble_v1_ToCollar_get_mtu_status_tag:
         handle_get_mtu_status(txn_id);
         break;
+    case onecollar_ble_v1_ToCollar_get_battery_tag:
+        handle_get_battery(txn_id);
+        break;
     case onecollar_ble_v1_ToCollar_get_imu_snapshot_tag:
         handle_get_imu_snapshot(txn_id);
         break;
@@ -584,12 +613,9 @@ static void dispatch_to_collar(uint16_t txn_id, const onecollar_ble_v1_ToCollar 
         handle_get_debug_stats(txn_id);
         break;
 
-    /* Battery: fuel_max17048 has no read API yet (and i2c_bus is a stub) —
-     * NOT_READY until the driver graduates from the bring-up register
-     * sequences. GPS / LoRa / streaming / session list+read+delete /
-     * geofence: backing implementations pending (see data_logger.c TODOs
-     * for the session surface). All retryable, hence NOT_READY. */
-    case onecollar_ble_v1_ToCollar_get_battery_tag:
+    /* GPS / LoRa / streaming / session list+read+delete / geofence:
+     * backing implementations pending (see data_logger.c TODOs for the
+     * session surface). All retryable, hence NOT_READY. */
     case onecollar_ble_v1_ToCollar_get_gps_tag:
     case onecollar_ble_v1_ToCollar_get_lora_status_tag:
     case onecollar_ble_v1_ToCollar_get_all_radios_tag:

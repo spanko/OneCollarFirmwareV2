@@ -118,7 +118,11 @@ endif()
 # production main.c reaches hardware through drivers/*.c wrappers.
 # ESP-IDF v6 split the old monolithic `driver` into per-peripheral
 # `esp_driver_*` components -- each direct header include needs its own.
-set(REQUIRES_LIST nvs_flash esp_timer driver bt nanopb esp_app_format)
+# esp_driver_i2c / esp_driver_gpio are needed by production drivers now:
+# i2c_bus.c uses the new-style i2c_master API, fuel_max17048.c reads the
+# ALRT pin via driver/gpio.h.
+set(REQUIRES_LIST nvs_flash esp_timer driver bt nanopb esp_app_format
+    esp_driver_i2c esp_driver_gpio)
 # Generated BLE protocol bindings (nanopb). Source: ../onecollar-platform/
 # contracts/ble_protocol.proto + .options, regenerated via
 # ../onecollar-platform/tools/codegen/gen_nanopb.sh. Consumed by
