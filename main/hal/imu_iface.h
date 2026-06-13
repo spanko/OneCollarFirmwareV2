@@ -30,14 +30,17 @@ extern "C" {
  */
 typedef struct {
     uint64_t timestamp_us;     ///< Capture time (board epoch, microseconds).
-    int16_t  accel_x_mg;       ///< milli-g (1 mg = 9.80665 mm/s^2).
-    int16_t  accel_y_mg;
-    int16_t  accel_z_mg;
-    int16_t  gyro_x_mdps;      ///< milli-degrees per second.
-    int16_t  gyro_y_mdps;
-    int16_t  gyro_z_mdps;
+    int32_t  accel_x_mg;       ///< milli-g (1 mg = 9.80665 mm/s^2).
+    int32_t  accel_y_mg;
+    int32_t  accel_z_mg;
+    int32_t  gyro_x_mdps;      ///< milli-degrees per second.
+    int32_t  gyro_y_mdps;
+    int32_t  gyro_z_mdps;
     uint16_t flags;            ///< IMU_SAMPLE_FLAG_* bitfield.
 } imu_sample_t;
+/* Fields are int32: at 500 dps full-scale a gyro reading reaches ~573 dps =
+ * 573000 mdps, far past int16's ±32767. Matches the SINT32 fields in the BLE
+ * ImuSnapshot proto so the value passes to the app without clamping. */
 
 #define IMU_SAMPLE_FLAG_NONE              0x0000
 #define IMU_SAMPLE_FLAG_FIFO_OVERFLOW     0x0001
