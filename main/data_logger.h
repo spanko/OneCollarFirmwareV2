@@ -104,6 +104,45 @@ uint32_t data_logger_current_capabilities(void);
 /** True once the sessions LittleFS partition is mounted (capture available). */
 bool data_logger_fs_ready(void);
 
+// ---------------------------------------------------------------------------
+// Session read-back (Stage C). The on-flash IMU frame payload is a persisted
+// ImuBatch: [base_timestamp_us:8 LE][rate_hz:4 LE][sample_count:2 LE][N x 12B].
+// ---------------------------------------------------------------------------
+
+/** Summary of one stored session (proto-agnostic; ble_service maps to SessionSummary). */
+typedef struct {
+    uint64_t session_id;
+    uint64_t start_time_us;     ///< first IMU frame's base timestamp (collar clock)
+    uint64_t duration_us;       ///< last frame base - first frame base
+    uint32_t sample_count;      ///< total IMU samples across the session
+    uint32_t rate_hz;           ///< IMU rate (from the first IMU frame)
+    uint32_t capability_flags;  ///< DATALOG_CAP_* at capture time (header)
+    uint64_t size_bytes;        ///< on-flash file size
+} datalog_session_info_t;
+
+/** List stored sessions into out[] (up to max). Returns the count found. */
+int data_logger_list(datalog_session_info_t *out, int max);
+
+/**
+ * Per-IMU-chunk callback for data_logger_read_imu. `samples_le` is
+ * `sample_count` x (ax,ay,az,gx,gy,gz) LE int16 (12 B each). Chunks are split so
+ * `sample_count` <= 40 (the SessionChunk wire cap). Return false to abort the read.
+ */
+typedef bool (*datalog_imu_frame_cb)(uint64_t base_us, uint32_t rate_hz,
+                                     uint32_t sample_count,
+                                     const uint8_t *samples_le, void *ctx);
+
+/**
+ * Read a stored session's IMU stream in [start_us, end_us] (0 = open end),
+ * invoking `cb` per <=40-sample chunk. ESP_ERR_NOT_FOUND if no such session,
+ * ESP_ERR_INVALID_STATE if it is the currently-capturing session.
+ */
+esp_err_t data_logger_read_imu(uint64_t session_id, uint64_t start_us,
+                               uint64_t end_us, datalog_imu_frame_cb cb, void *ctx);
+
+/** Delete a stored session. INVALID_STATE if it is the active capture. */
+esp_err_t data_logger_delete(uint64_t session_id);
+
 #ifdef __cplusplus
 }
 #endif

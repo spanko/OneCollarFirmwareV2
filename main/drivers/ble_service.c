@@ -120,6 +120,17 @@ static uint32_t      s_capture_frames = 0;
 static uint32_t      s_capture_samples = 0;
 static void capture_log_task(void *arg);  // defined after the shared drain helper
 
+// Session read-back (Stage C): a worker task reads a stored session and emits a
+// SessionChunk series on cmd_tx (shared txn, chunk_index, final terminator).
+static volatile bool s_reading = false;
+static TaskHandle_t  s_read_task = NULL;
+static uint16_t      s_read_txn = 0;
+static uint64_t      s_read_session_id = 0;
+static uint64_t      s_read_start_us = 0;
+static uint64_t      s_read_end_us = 0;
+static uint32_t      s_read_chunk_index = 0;
+static void read_session_task(void *arg);  // defined after capture_log_task
+
 /* Wire-format counters, served verbatim by GetDebugStats. */
 static onecollar_ble_v1_DebugStats s_stats;
 
@@ -707,6 +718,79 @@ static void capture_log_task(void *arg)
     vTaskDelete(NULL);
 }
 
+// Encode + notify one FromCollar (session_chunk) on cmd_tx. Read-task-only
+// buffers. SessionChunk fits one frame by construction (<=32 samples) so no
+// fragmentation — the chunk series shares the request txn and is sequenced by
+// chunk_index, not by MORE_FRAGMENTS. Paced: retry on controller-buffer
+// exhaustion, abort on disconnect.
+static bool read_send_fc(const onecollar_ble_v1_FromCollar *fc)
+{
+    static uint8_t pb_buf[onecollar_ble_v1_FromCollar_size];  // read-task-only
+    pb_ostream_t os = pb_ostream_from_buffer(pb_buf, sizeof(pb_buf));
+    if (!pb_encode(&os, onecollar_ble_v1_FromCollar_fields, fc)) {
+        ESP_LOGE(TAG, "SessionChunk encode failed: %s", PB_GET_ERROR(&os));
+        return false;
+    }
+    static uint8_t frame[BLE_FRAME_MAX];
+    int flen = env_encode(ENV_TYPE_FROM_COLLAR, 0, s_read_txn,
+                          pb_buf, (uint16_t)os.bytes_written, frame, sizeof(frame));
+    if (flen < 0) return false;
+    for (int retry = 0; retry < 100; retry++) {
+        int rc = ble_notify_frame(s_cmd_tx_handle, frame, flen);
+        if (rc == 0) return true;
+        if (rc == BLE_HS_ENOMEM) { vTaskDelay(pdMS_TO_TICKS(8)); continue; }  // buffers full
+        return false;  // ENOTCONN etc — peer gone
+    }
+    return false;
+}
+
+static bool read_emit_chunk(uint64_t base_us, uint32_t rate, uint32_t cnt,
+                            const uint8_t *samples_le, void *ctx)
+{
+    (void)ctx;
+    static onecollar_ble_v1_FromCollar fc;   // read-task-only
+    memset(&fc, 0, sizeof(fc));
+    fc.status = onecollar_ble_v1_Status_STATUS_OK;
+    fc.which_response = onecollar_ble_v1_FromCollar_session_chunk_tag;
+    onecollar_ble_v1_SessionChunk *ch = &fc.response.session_chunk;
+    ch->session_id     = s_read_session_id;
+    ch->chunk_index    = s_read_chunk_index++;
+    ch->first_sample_us = base_us;
+    ch->rate_hz        = rate;
+    ch->sample_count   = cnt;
+    size_t bytes = (size_t)cnt * 12;
+    if (bytes > sizeof(ch->samples.bytes)) bytes = sizeof(ch->samples.bytes);
+    memcpy(ch->samples.bytes, samples_le, bytes);
+    ch->samples.size = (pb_size_t)bytes;
+    ch->final_chunk = false;
+    return read_send_fc(&fc);
+}
+
+static void read_session_task(void *arg)
+{
+    (void)arg;
+    s_read_chunk_index = 0;
+    esp_err_t e = data_logger_read_imu(s_read_session_id, s_read_start_us,
+                                       s_read_end_us, read_emit_chunk, NULL);
+    // Terminator: empty chunk, final_chunk=true; status reflects the read result.
+    static onecollar_ble_v1_FromCollar fc;
+    memset(&fc, 0, sizeof(fc));
+    fc.status = (e == ESP_OK) ? onecollar_ble_v1_Status_STATUS_OK
+              : (e == ESP_ERR_NOT_FOUND) ? onecollar_ble_v1_Status_STATUS_NOT_FOUND
+              : (e == ESP_ERR_INVALID_STATE) ? onecollar_ble_v1_Status_STATUS_BUSY
+              : onecollar_ble_v1_Status_STATUS_INTERNAL;
+    fc.which_response = onecollar_ble_v1_FromCollar_session_chunk_tag;
+    fc.response.session_chunk.session_id  = s_read_session_id;
+    fc.response.session_chunk.chunk_index = s_read_chunk_index;
+    fc.response.session_chunk.final_chunk = true;
+    read_send_fc(&fc);
+    ESP_LOGI(TAG, "read session %llu done: %u chunks (%s)",
+             (unsigned long long)s_read_session_id, s_read_chunk_index, esp_err_to_name(e));
+    s_reading = false;
+    s_read_task = NULL;
+    vTaskDelete(NULL);
+}
+
 static void handle_start_imu_stream(uint16_t txn_id,
                                     const onecollar_ble_v1_StartImuStreamRequest *req)
 {
@@ -764,6 +848,60 @@ static void handle_get_stream_status(uint16_t txn_id)
     st->buffer_capacity = 256;
     st->batches_dropped = s_stream_batches_dropped;
     ble_send_from_collar(txn_id, &s_resp);
+}
+
+// --- Session read-back (Stage C) ------------------------------------------
+static void handle_list_sessions(uint16_t txn_id)
+{
+    static datalog_session_info_t infos[32];
+    int n = data_logger_list(infos, 32);
+    memset(&s_resp, 0, sizeof(s_resp));
+    s_resp.status         = onecollar_ble_v1_Status_STATUS_OK;
+    s_resp.which_response = onecollar_ble_v1_FromCollar_session_list_tag;
+    onecollar_ble_v1_SessionList *sl = &s_resp.response.session_list;
+    sl->sessions_count = (pb_size_t)n;
+    for (int i = 0; i < n; i++) {
+        sl->sessions[i].session_id      = infos[i].session_id;
+        sl->sessions[i].start_time_us   = infos[i].start_time_us;
+        sl->sessions[i].duration_us     = infos[i].duration_us;
+        sl->sessions[i].sample_count    = infos[i].sample_count;
+        sl->sessions[i].rate_hz         = infos[i].rate_hz;
+        sl->sessions[i].capability_flags = infos[i].capability_flags;
+        sl->sessions[i].size_bytes      = infos[i].size_bytes;
+    }
+    ble_send_from_collar(txn_id, &s_resp);  // fragments if > MTU (mobile reassembles by txn)
+}
+
+static void handle_read_session(uint16_t txn_id,
+                                const onecollar_ble_v1_ReadSessionRequest *req)
+{
+    if (s_reading) {  // one read at a time (single set of read-task buffers)
+        ble_send_status(txn_id, onecollar_ble_v1_Status_STATUS_BUSY);
+        return;
+    }
+    s_read_txn        = txn_id;
+    s_read_session_id = req->session_id;
+    s_read_start_us   = req->start_timestamp_us;
+    s_read_end_us     = req->end_timestamp_us;
+    s_reading = true;
+    // The response is the SessionChunk series emitted by the worker (no separate
+    // FromCollar reply here); a missing/active session surfaces as a terminator
+    // chunk with a non-OK status.
+    if (xTaskCreatePinnedToCore(read_session_task, "imu_read", 4096, NULL, 5,
+                                &s_read_task, 0) != pdPASS) {
+        s_reading = false;
+        ble_send_status(txn_id, onecollar_ble_v1_Status_STATUS_INTERNAL);
+    }
+}
+
+static void handle_delete_session(uint16_t txn_id,
+                                  const onecollar_ble_v1_DeleteSessionRequest *req)
+{
+    esp_err_t e = data_logger_delete(req->session_id);
+    ble_send_status(txn_id,
+        e == ESP_OK ? onecollar_ble_v1_Status_STATUS_OK
+        : e == ESP_ERR_INVALID_STATE ? onecollar_ble_v1_Status_STATUS_BUSY
+        : onecollar_ble_v1_Status_STATUS_NOT_FOUND);
 }
 
 static void handle_echo(uint16_t txn_id, const onecollar_ble_v1_EchoRequest *req)
@@ -877,13 +1015,20 @@ static void dispatch_to_collar(uint16_t txn_id, const onecollar_ble_v1_ToCollar 
         handle_get_stream_status(txn_id);
         break;
 
+    case onecollar_ble_v1_ToCollar_list_sessions_tag:
+        handle_list_sessions(txn_id);
+        break;
+    case onecollar_ble_v1_ToCollar_read_session_tag:
+        handle_read_session(txn_id, &to->request.read_session);
+        break;
+    case onecollar_ble_v1_ToCollar_delete_session_tag:
+        handle_delete_session(txn_id, &to->request.delete_session);
+        break;
+
     case onecollar_ble_v1_ToCollar_get_gps_tag:
     case onecollar_ble_v1_ToCollar_get_lora_status_tag:
     case onecollar_ble_v1_ToCollar_get_all_radios_tag:
-    case onecollar_ble_v1_ToCollar_get_imu_batch_tag:  /* time-range query needs buffered history (Stage C) */
-    case onecollar_ble_v1_ToCollar_list_sessions_tag:
-    case onecollar_ble_v1_ToCollar_read_session_tag:
-    case onecollar_ble_v1_ToCollar_delete_session_tag:
+    case onecollar_ble_v1_ToCollar_get_imu_batch_tag:  /* time-range query needs buffered history */
     case onecollar_ble_v1_ToCollar_set_geofence_tag:
         ble_send_status(txn_id, onecollar_ble_v1_Status_STATUS_NOT_READY);
         break;

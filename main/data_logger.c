@@ -33,6 +33,7 @@
 #include <inttypes.h>
 #include <string.h>
 #include <sys/time.h>
+#include <dirent.h>
 
 static const char *TAG = "data_logger";
 
@@ -247,4 +248,141 @@ uint32_t data_logger_current_capabilities(void)
 bool data_logger_fs_ready(void)
 {
     return s_fs_mounted;
+}
+
+// ---------------------------------------------------------------------------
+// Session read-back (Stage C). Files: [header][frame]... ; IMU frame payload is
+// [base_ts:8 LE][rate:4 LE][count:2 LE][count*12 samples].
+// ---------------------------------------------------------------------------
+#define IMU_FRAME_SUBHDR  14
+// Samples per emitted chunk. SessionChunk must fit ONE MTU-512 frame (chunks
+// share the request txn, so MORE_FRAGMENTS reassembly would merge them) — 32
+// samples (384 B) + fields + envelope leaves comfortable margin under 509 B.
+#define READ_CHUNK_MAX    32
+
+static uint32_t rd_u32(const uint8_t *p)
+{
+    return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+}
+static uint64_t rd_u64(const uint8_t *p)
+{
+    uint64_t v = 0;
+    for (int i = 0; i < 8; i++) v |= (uint64_t)p[i] << (8 * i);
+    return v;
+}
+
+int data_logger_list(datalog_session_info_t *out, int max)
+{
+    if (!s_fs_mounted || !out || max <= 0) return 0;
+    DIR *dir = opendir(SESSIONS_BASE_PATH);
+    if (!dir) return 0;
+
+    int n = 0;
+    struct dirent *de;
+    while (n < max && (de = readdir(dir)) != NULL) {
+        const char *name = de->d_name;
+        size_t l = strlen(name);
+        if (l < 5 || strcmp(name + l - 4, ".ocs") != 0) continue;
+
+        char path[sizeof(SESSIONS_BASE_PATH) + sizeof(de->d_name) + 2];
+        snprintf(path, sizeof(path), SESSIONS_BASE_PATH "/%s", name);
+        FILE *f = fopen(path, "rb");
+        if (!f) continue;
+
+        datalog_session_header_t h;
+        if (fread(&h, 1, sizeof(h), f) != sizeof(h) || h.magic != DATALOG_MAGIC) {
+            fclose(f);
+            continue;
+        }
+        datalog_session_info_t *info = &out[n];
+        memset(info, 0, sizeof(*info));
+        info->session_id = h.session_id;
+        info->capability_flags = h.capability_flags;
+        info->rate_hz = h.imu_odr_hz;
+
+        uint64_t first_us = 0, last_us = 0;
+        bool any = false;
+        uint8_t fh[5];
+        while (fread(fh, 1, sizeof(fh), f) == sizeof(fh)) {
+            uint32_t len = rd_u32(&fh[1]);
+            if (fh[0] == DATALOG_STREAM_IMU_LOWG && len >= IMU_FRAME_SUBHDR) {
+                uint8_t sub[IMU_FRAME_SUBHDR];
+                if (fread(sub, 1, sizeof(sub), f) != sizeof(sub)) break;
+                uint64_t base = rd_u64(sub);
+                uint32_t rate = rd_u32(&sub[8]);
+                uint16_t cnt = (uint16_t)(sub[12] | (sub[13] << 8));
+                if (!any) { first_us = base; info->rate_hz = rate; any = true; }
+                last_us = base;
+                info->sample_count += cnt;
+                fseek(f, (long)(len - IMU_FRAME_SUBHDR), SEEK_CUR);  // skip samples
+            } else {
+                fseek(f, (long)len, SEEK_CUR);
+            }
+        }
+        info->start_time_us = first_us;
+        info->duration_us = any ? (last_us - first_us) : 0;
+        fseek(f, 0, SEEK_END);
+        info->size_bytes = (uint64_t)ftell(f);
+        fclose(f);
+        n++;
+    }
+    closedir(dir);
+    return n;
+}
+
+esp_err_t data_logger_read_imu(uint64_t session_id, uint64_t start_us,
+                               uint64_t end_us, datalog_imu_frame_cb cb, void *ctx)
+{
+    if (!s_fs_mounted || !cb) return ESP_ERR_INVALID_ARG;
+    if (s_session_open && session_id == s_active_session_id) return ESP_ERR_INVALID_STATE;
+
+    char path[SESSION_PATH_MAX];
+    snprintf(path, sizeof(path), SESSIONS_BASE_PATH "/%" PRIu64 ".ocs", session_id);
+    FILE *f = fopen(path, "rb");
+    if (!f) return ESP_ERR_NOT_FOUND;
+
+    fseek(f, (long)sizeof(datalog_session_header_t), SEEK_SET);
+    static uint8_t samp[READ_CHUNK_MAX * 12];
+    uint8_t fh[5];
+    while (fread(fh, 1, sizeof(fh), f) == sizeof(fh)) {
+        uint32_t len = rd_u32(&fh[1]);
+        if (fh[0] != DATALOG_STREAM_IMU_LOWG || len < IMU_FRAME_SUBHDR) {
+            fseek(f, (long)len, SEEK_CUR);
+            continue;
+        }
+        uint8_t sub[IMU_FRAME_SUBHDR];
+        if (fread(sub, 1, sizeof(sub), f) != sizeof(sub)) break;
+        uint64_t base = rd_u64(sub);
+        uint32_t rate = rd_u32(&sub[8]);
+        uint16_t cnt = (uint16_t)(sub[12] | (sub[13] << 8));
+
+        bool in_range = (start_us == 0 || base >= start_us) &&
+                        (end_us == 0 || base <= end_us);
+        if (!in_range) {
+            fseek(f, (long)(len - IMU_FRAME_SUBHDR), SEEK_CUR);
+            continue;
+        }
+        // Emit in <=40-sample chunks (the wire cap), splitting a larger frame.
+        uint32_t done = 0;
+        uint32_t dt_us = rate ? (uint32_t)(1000000UL / rate) : 10204;  // ~98 Hz
+        while (done < cnt) {
+            uint32_t take = cnt - done;
+            if (take > READ_CHUNK_MAX) take = READ_CHUNK_MAX;
+            if (fread(samp, 1, take * 12u, f) != take * 12u) { fclose(f); return ESP_FAIL; }
+            uint64_t sub_base = base + (uint64_t)done * dt_us;
+            if (!cb(sub_base, rate, take, samp, ctx)) { fclose(f); return ESP_OK; }
+            done += take;
+        }
+    }
+    fclose(f);
+    return ESP_OK;
+}
+
+esp_err_t data_logger_delete(uint64_t session_id)
+{
+    if (!s_fs_mounted) return ESP_ERR_INVALID_STATE;
+    if (s_session_open && session_id == s_active_session_id) return ESP_ERR_INVALID_STATE;
+    char path[SESSION_PATH_MAX];
+    snprintf(path, sizeof(path), SESSIONS_BASE_PATH "/%" PRIu64 ".ocs", session_id);
+    return (remove(path) == 0) ? ESP_OK : ESP_ERR_NOT_FOUND;
 }

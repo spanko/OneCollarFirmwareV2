@@ -312,6 +312,32 @@ IMU frames; C.3 the ListSessions/ReadSession/DeleteSession RPCs + read-back. Als
 `main.c` still opens a session at boot (a header-only file per boot) — gate it on
 explicit capture in C.2.
 
+### 2026-06-15 — Stage C.2 + C.3: capture→flash logging + session read-back RPCs (firmware)
+
+**C.2 — capture→flash.** A capture-logger task drains the imu_sampler ring into
+batched IMU frames written to the session file (`data_logger`). On-flash IMU
+frame payload (persisted ImuBatch): `[base_ts:8][rate:4][count:2][N×12B int16]`.
+`capture XOR stream` (one ring consumer; the other returns `BUSY`); capture
+survives BLE disconnect (off-leash). `data_logger` made thread-safe (mutex) for
+concurrent IMU-logger + LabelTag appends; stop joins the task before close. Boot
+no longer auto-opens a session.
+
+**C.3 — read-back RPCs.** `ListSessions` (scan `/sessions`, tally each file →
+`SessionSummary[32]`), `ReadSession` (worker task emits a `SessionChunk` series
+on cmd_tx — shared txn, `chunk_index`, ≤32 samples/chunk so each fits one MTU
+frame, paced with ENOMEM retry, final terminator chunk), `DeleteSession`
+(unlink; refuses the active session). On-flash frames split to ≤32-sample chunks
+on read.
+
+**Verified on silicon (autonomous):** all three sub-stages build; C.1 mount +
+write path verified; C.2/C.3 boot clean (Gate A unregressed, FS:mounted, no
+panic from the new tasks/handlers).
+
+**Not yet verified (needs the phone):** the Gate-C round-trip — capture off-tether
+→ reconnect → `ReadSession` → confirm byte-identical. Needs the mobile read path
+(the core's `_request` expects one response per txn; `ReadSession` returns a
+chunk *series*) + a "capture to flash" control. Next session.
+
 ---
 
 *Drafted 2026-06-05 after the first Rev 6 bring-up session. Append new
