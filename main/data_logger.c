@@ -26,6 +26,9 @@
 #include "hal/imu_iface.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "esp_littlefs.h"
+#include <stdio.h>
+#include <inttypes.h>
 #include <string.h>
 #include <sys/time.h>
 
@@ -34,8 +37,18 @@ static const char *TAG = "data_logger";
 #define DATALOG_MAGIC               0x4F43534Eu  // "ONCS" little-endian
 #define DATALOG_HEADER_VERSION      1
 
+// LittleFS on the dedicated `sessions` partition (partitions.csv). One file per
+// session: [header][frame][frame]... where each frame is
+// [stream_id:1][len:4 LE][payload] (data_logger.h).
+#define SESSIONS_PARTITION_LABEL    "sessions"
+#define SESSIONS_BASE_PATH          "/sessions"
+#define SESSION_PATH_MAX            48
+
 static uint32_t s_active_capabilities = 0;
 static bool     s_session_open = false;
+static bool     s_fs_mounted = false;
+static FILE    *s_file = NULL;        // active session's open file (append)
+static uint64_t s_active_session_id = 0;
 
 /**
  * Compute capability flags from board.h compile-time defines plus any
@@ -74,8 +87,26 @@ static uint32_t compute_capabilities(void)
 
 esp_err_t data_logger_init(void)
 {
-    ESP_LOGI(TAG, "data_logger_init");
-    // TODO: mount LittleFS partition, prepare session directory
+    esp_vfs_littlefs_conf_t conf = {
+        .base_path = SESSIONS_BASE_PATH,
+        .partition_label = SESSIONS_PARTITION_LABEL,
+        .format_if_mount_failed = true,   // first boot / corrupt: format and continue
+        .dont_mount = false,
+    };
+    esp_err_t err = esp_vfs_littlefs_register(&conf);
+    if (err != ESP_OK) {
+        // Non-fatal: capture is unavailable but the collar still runs (telemetry,
+        // streaming-to-phone). data_logger_session_open will refuse cleanly.
+        ESP_LOGE(TAG, "LittleFS mount failed on '%s' (%s) — capture disabled",
+                 SESSIONS_PARTITION_LABEL, esp_err_to_name(err));
+        return err;
+    }
+    s_fs_mounted = true;
+    size_t total = 0, used = 0;
+    if (esp_littlefs_info(SESSIONS_PARTITION_LABEL, &total, &used) == ESP_OK) {
+        ESP_LOGI(TAG, "sessions FS mounted: %u/%u KB used", (unsigned)(used / 1024),
+                 (unsigned)(total / 1024));
+    }
     return ESP_OK;
 }
 
@@ -83,6 +114,7 @@ esp_err_t data_logger_session_open(datalog_session_header_t *out_header)
 {
     if (!out_header) return ESP_ERR_INVALID_ARG;
     if (s_session_open) return ESP_ERR_INVALID_STATE;
+    if (!s_fs_mounted) return ESP_ERR_INVALID_STATE;  // no FS → no capture
 
     memset(out_header, 0, sizeof(*out_header));
     out_header->magic = DATALOG_MAGIC;
@@ -122,34 +154,76 @@ esp_err_t data_logger_session_open(datalog_session_header_t *out_header)
 #endif
     strncpy(out_header->firmware_version, "0.0.0-scaffold", sizeof(out_header->firmware_version) - 1);
 
+    // Create the session file and write the header at offset 0. The file stays
+    // open for frame appends until session_close.
+    char path[SESSION_PATH_MAX];
+    snprintf(path, sizeof(path), SESSIONS_BASE_PATH "/%" PRIu64 ".ocs",
+             out_header->session_id);
+    s_file = fopen(path, "wb");
+    if (!s_file) {
+        ESP_LOGE(TAG, "cannot create %s", path);
+        return ESP_FAIL;
+    }
+    if (fwrite(out_header, 1, sizeof(*out_header), s_file) != sizeof(*out_header)) {
+        ESP_LOGE(TAG, "header write failed");
+        fclose(s_file);
+        s_file = NULL;
+        return ESP_FAIL;
+    }
+    fflush(s_file);
+
     s_active_capabilities = out_header->capability_flags;
+    s_active_session_id = out_header->session_id;
     s_session_open = true;
 
-    ESP_LOGI(TAG, "session opened: id=%llu caps=0x%08x", out_header->session_id, out_header->capability_flags);
-    // TODO: persist header to flash
+    ESP_LOGI(TAG, "session opened: id=%" PRIu64 " caps=0x%08" PRIx32 " -> %s",
+             out_header->session_id, out_header->capability_flags, path);
     return ESP_OK;
 }
 
 esp_err_t data_logger_session_close(void)
 {
     if (!s_session_open) return ESP_ERR_INVALID_STATE;
-    ESP_LOGI(TAG, "session closed");
+    long size = -1;
+    if (s_file) {
+        fflush(s_file);
+        size = ftell(s_file);
+        fclose(s_file);
+        s_file = NULL;
+    }
+    ESP_LOGI(TAG, "session %" PRIu64 " closed (%ld bytes)", s_active_session_id, size);
     s_session_open = false;
     s_active_capabilities = 0;
-    // TODO: flush + finalize on-disk session
+    s_active_session_id = 0;
     return ESP_OK;
 }
 
 esp_err_t data_logger_append(datalog_stream_id_t stream_id,
                              const void *payload, size_t payload_size)
 {
-    (void)stream_id; (void)payload; (void)payload_size;
-    if (!s_session_open) return ESP_ERR_INVALID_STATE;
-    // TODO: write [stream_id:1][length:4 LE][payload] to active session file
+    if (!s_session_open || !s_file) return ESP_ERR_INVALID_STATE;
+    if (payload_size > 0 && !payload) return ESP_ERR_INVALID_ARG;
+
+    // Frame: [stream_id:1][len:4 LE][payload]
+    uint8_t hdr[5];
+    hdr[0] = (uint8_t)stream_id;
+    uint32_t len = (uint32_t)payload_size;
+    hdr[1] = (uint8_t)(len & 0xFF);
+    hdr[2] = (uint8_t)((len >> 8) & 0xFF);
+    hdr[3] = (uint8_t)((len >> 16) & 0xFF);
+    hdr[4] = (uint8_t)((len >> 24) & 0xFF);
+    if (fwrite(hdr, 1, sizeof(hdr), s_file) != sizeof(hdr)) return ESP_FAIL;
+    if (payload_size > 0 &&
+        fwrite(payload, 1, payload_size, s_file) != payload_size) return ESP_FAIL;
     return ESP_OK;
 }
 
 uint32_t data_logger_current_capabilities(void)
 {
     return s_session_open ? s_active_capabilities : 0;
+}
+
+bool data_logger_fs_ready(void)
+{
+    return s_fs_mounted;
 }

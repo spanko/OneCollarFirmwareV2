@@ -3,6 +3,9 @@ dependencies:
   ## Required IDF version
   idf:
     version: ">=4.1.0"
+  ## LittleFS for the `sessions` partition (data_logger session capture, Stage C).
+  ## Robust append + wear-levelling + power-loss safety; mounted by data_logger.
+  joltwallet/littlefs: ">=1.10.0"
   # # Put list of dependencies here
   # # For components maintained by Espressif:
   # component: "~1.0.0"

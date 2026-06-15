@@ -215,11 +215,12 @@ void app_main(void)
         if (st.samples > 1 && st.last_us > st.start_us) {
             double secs = (double)(st.last_us - st.start_us) / 1e6;
             double rate = (double)(st.samples - 1) / secs;
-            ESP_LOGI(TAG, "Gate A: %llu samples, %.2f Hz, dropped~%llu, max_gap=%llu us, rb_full=%u%s",
+            ESP_LOGI(TAG, "Gate A: %llu samples, %.2f Hz, dropped~%llu, max_gap=%llu us, rb_full=%u%s | FS:%s",
                      (unsigned long long)st.samples, rate,
                      (unsigned long long)st.dropped_est,
                      (unsigned long long)st.max_gap_us, st.ringbuf_full,
-                     st.nonmonotonic ? ", NONMONOTONIC!" : "");
+                     st.nonmonotonic ? ", NONMONOTONIC!" : "",
+                     data_logger_fs_ready() ? "mounted" : "DOWN");
         } else {
             ESP_LOGW(TAG, "Gate A: no samples yet (caps=0x%08x)",
                      data_logger_current_capabilities());

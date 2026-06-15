@@ -26,6 +26,7 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include <stdbool.h>
 #include "esp_err.h"
 
 #ifdef __cplusplus
@@ -99,6 +100,9 @@ esp_err_t data_logger_append(datalog_stream_id_t stream_id,
 
 /** Returns the current session capability bitfield, or 0 if no session is open. */
 uint32_t data_logger_current_capabilities(void);
+
+/** True once the sessions LittleFS partition is mounted (capture available). */
+bool data_logger_fs_ready(void);
 
 #ifdef __cplusplus
 }

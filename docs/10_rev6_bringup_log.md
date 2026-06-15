@@ -287,6 +287,31 @@ round-trip (phone starts the stream, writes a `data_schema` session, round-trips
 through `helsinki-eval`). That needs the mobile record path (start-stream + write
 session + video sync) and a phone bench session — firmware half is done.
 
+### 2026-06-15 — Stage C.1: LittleFS session store mounts on silicon
+
+**What changed.** First piece of autonomous capture (platform docs/07a Stage C).
+Added `joltwallet/littlefs` (managed component) and implemented the `data_logger`
+write path against the dedicated **`sessions`** partition (8 MB, partitions.csv):
+mount in `data_logger_init` (format-if-empty), `session_open` creates
+`/sessions/<id>.ocs` and writes the header, `append` writes
+`[stream_id:1][len:4 LE][payload]` frames, `close` flushes/finalizes. Added
+`data_logger_fs_ready()` surfaced in the steady Gate-A log.
+
+**Verified on silicon.** `sessions FS mounted: 8/8064 KB used` (auto-formatted
+first boot); `session opened … -> /sessions/150159000.ocs` (header write
+succeeded); `FS:mounted` in steady state; Stage A unregressed (98.5 Hz).
+
+**Flashing note.** Hit the documented `errno 62` RTS drop again (Stage B app was
+running). Recovered via `usbipd.exe detach --busid 1-2` then
+`usbipd.exe attach --wsl --busid 1-2` from WSL (a clean re-attach restores the
+reset line) — then the flash's `default-reset` works. Watch the attach/detach
+timing: a too-fast re-attach raced the re-enumeration and reported "no device."
+
+**Still to do (Stage C).** C.2 wire capture → drain the imu_sampler ring → append
+IMU frames; C.3 the ListSessions/ReadSession/DeleteSession RPCs + read-back. Also:
+`main.c` still opens a session at boot (a header-only file per boot) — gate it on
+explicit capture in C.2.
+
 ---
 
 *Drafted 2026-06-05 after the first Rev 6 bring-up session. Append new
