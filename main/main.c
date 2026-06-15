@@ -174,15 +174,11 @@ void app_main(void)
     if (gps_init()         != ESP_OK) ESP_LOGW(TAG, "gps_init failed (off by default — gated by location policy)");
 #endif
 
-    // 9. Data logger — opens a session at boot for now. Production firmware
-    //    will gate this on activity / explicit recording requests.
-    ESP_ERROR_CHECK(data_logger_init());
-    {
-        datalog_session_header_t hdr;
-        if (data_logger_session_open(&hdr) == ESP_OK) {
-            ESP_LOGI(TAG, "Logger session %llu opened (caps=0x%08x)",
-                     hdr.session_id, hdr.capability_flags);
-        }
+    // 9. Data logger — mount the sessions filesystem. Capture is now explicit
+    //    (BLE StartCapture, Stage C); no boot-auto-session (it accumulated a
+    //    header-only file per boot).
+    if (data_logger_init() != ESP_OK) {
+        ESP_LOGW(TAG, "data_logger_init failed — flash capture unavailable");
     }
 
     ESP_LOGI(TAG, "Boot complete. Tier 0 will arm once MLC program is loaded.");
@@ -200,7 +196,7 @@ void app_main(void)
         // Drain + discard ONLY when no real consumer is active — while an IMU
         // stream (Stage B) runs, its task is the sole ring consumer; two readers
         // would split the sample stream.
-        if (rb && !ble_service_is_streaming()) {
+        if (rb && !ble_service_is_streaming() && !ble_service_is_capturing()) {
             size_t sz;
             void *item;
             while ((item = xRingbufferReceive(rb, &sz, 0)) != NULL) {

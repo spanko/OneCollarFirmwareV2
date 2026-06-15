@@ -27,6 +27,8 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "esp_littlefs.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include <stdio.h>
 #include <inttypes.h>
 #include <string.h>
@@ -49,6 +51,9 @@ static bool     s_session_open = false;
 static bool     s_fs_mounted = false;
 static FILE    *s_file = NULL;        // active session's open file (append)
 static uint64_t s_active_session_id = 0;
+// Serializes file ops: during a capture the IMU logger task and the host-task
+// LabelTag handler both append to s_file; close must not race either.
+static SemaphoreHandle_t s_mux = NULL;
 
 /**
  * Compute capability flags from board.h compile-time defines plus any
@@ -87,6 +92,8 @@ static uint32_t compute_capabilities(void)
 
 esp_err_t data_logger_init(void)
 {
+    if (!s_mux) s_mux = xSemaphoreCreateMutex();
+    if (!s_mux) return ESP_ERR_NO_MEM;
     esp_vfs_littlefs_conf_t conf = {
         .base_path = SESSIONS_BASE_PATH,
         .partition_label = SESSIONS_PARTITION_LABEL,
@@ -183,7 +190,11 @@ esp_err_t data_logger_session_open(datalog_session_header_t *out_header)
 
 esp_err_t data_logger_session_close(void)
 {
-    if (!s_session_open) return ESP_ERR_INVALID_STATE;
+    if (s_mux) xSemaphoreTake(s_mux, portMAX_DELAY);
+    if (!s_session_open) {
+        if (s_mux) xSemaphoreGive(s_mux);
+        return ESP_ERR_INVALID_STATE;
+    }
     long size = -1;
     if (s_file) {
         fflush(s_file);
@@ -195,15 +206,21 @@ esp_err_t data_logger_session_close(void)
     s_session_open = false;
     s_active_capabilities = 0;
     s_active_session_id = 0;
+    if (s_mux) xSemaphoreGive(s_mux);
     return ESP_OK;
 }
 
 esp_err_t data_logger_append(datalog_stream_id_t stream_id,
                              const void *payload, size_t payload_size)
 {
-    if (!s_session_open || !s_file) return ESP_ERR_INVALID_STATE;
     if (payload_size > 0 && !payload) return ESP_ERR_INVALID_ARG;
+    if (s_mux) xSemaphoreTake(s_mux, portMAX_DELAY);
+    if (!s_session_open || !s_file) {
+        if (s_mux) xSemaphoreGive(s_mux);
+        return ESP_ERR_INVALID_STATE;
+    }
 
+    esp_err_t rc = ESP_OK;
     // Frame: [stream_id:1][len:4 LE][payload]
     uint8_t hdr[5];
     hdr[0] = (uint8_t)stream_id;
@@ -212,10 +229,14 @@ esp_err_t data_logger_append(datalog_stream_id_t stream_id,
     hdr[2] = (uint8_t)((len >> 8) & 0xFF);
     hdr[3] = (uint8_t)((len >> 16) & 0xFF);
     hdr[4] = (uint8_t)((len >> 24) & 0xFF);
-    if (fwrite(hdr, 1, sizeof(hdr), s_file) != sizeof(hdr)) return ESP_FAIL;
-    if (payload_size > 0 &&
-        fwrite(payload, 1, payload_size, s_file) != payload_size) return ESP_FAIL;
-    return ESP_OK;
+    if (fwrite(hdr, 1, sizeof(hdr), s_file) != sizeof(hdr)) {
+        rc = ESP_FAIL;
+    } else if (payload_size > 0 &&
+               fwrite(payload, 1, payload_size, s_file) != payload_size) {
+        rc = ESP_FAIL;
+    }
+    if (s_mux) xSemaphoreGive(s_mux);
+    return rc;
 }
 
 uint32_t data_logger_current_capabilities(void)
