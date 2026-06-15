@@ -73,6 +73,14 @@ esp_err_t imu_read_sample(imu_sample_t *out_sample)
     return ESP_ERR_NOT_FOUND;
 }
 
+esp_err_t imu_read_sample_raw(imu_raw_sample_t *out_sample)
+{
+    if (!out_sample) return ESP_ERR_INVALID_ARG;
+    // TODO: DSV320X low-g UI burst (gyro XYZ + accel XYZ) -> raw int16, accel-first.
+    memset(out_sample, 0, sizeof(*out_sample));
+    return ESP_ERR_NOT_FOUND;
+}
+
 esp_err_t imu_drain_fifo(imu_sample_t *out_buffer, size_t buffer_capacity, size_t *out_count)
 {
     (void)out_buffer; (void)buffer_capacity;

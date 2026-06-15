@@ -124,7 +124,7 @@ esp_err_t imu_get_info(imu_info_t *out_info)
     return ESP_OK;
 }
 
-esp_err_t imu_read_sample(imu_sample_t *out_sample)
+esp_err_t imu_read_sample_raw(imu_raw_sample_t *out_sample)
 {
     if (!out_sample) return ESP_ERR_INVALID_ARG;
     if (!s_ready) return ESP_ERR_INVALID_STATE;
@@ -142,21 +142,33 @@ esp_err_t imu_read_sample(imu_sample_t *out_sample)
     err = i2c_bus_read(BOARD_IMU_I2C_ADDR, LSM6_REG_OUTX_L_G, b, sizeof(b));
     if (err != ESP_OK) return err;
 
-    int16_t gx = (int16_t)((uint16_t)b[0]  | ((uint16_t)b[1]  << 8));
-    int16_t gy = (int16_t)((uint16_t)b[2]  | ((uint16_t)b[3]  << 8));
-    int16_t gz = (int16_t)((uint16_t)b[4]  | ((uint16_t)b[5]  << 8));
-    int16_t ax = (int16_t)((uint16_t)b[6]  | ((uint16_t)b[7]  << 8));
-    int16_t ay = (int16_t)((uint16_t)b[8]  | ((uint16_t)b[9]  << 8));
-    int16_t az = (int16_t)((uint16_t)b[10] | ((uint16_t)b[11] << 8));
+    out_sample->timestamp_us = (uint64_t)esp_timer_get_time();
+    // Store accel-first (ImuBatch wire order); burst is gyro-first.
+    out_sample->gyro[0]  = (int16_t)((uint16_t)b[0]  | ((uint16_t)b[1]  << 8));
+    out_sample->gyro[1]  = (int16_t)((uint16_t)b[2]  | ((uint16_t)b[3]  << 8));
+    out_sample->gyro[2]  = (int16_t)((uint16_t)b[4]  | ((uint16_t)b[5]  << 8));
+    out_sample->accel[0] = (int16_t)((uint16_t)b[6]  | ((uint16_t)b[7]  << 8));
+    out_sample->accel[1] = (int16_t)((uint16_t)b[8]  | ((uint16_t)b[9]  << 8));
+    out_sample->accel[2] = (int16_t)((uint16_t)b[10] | ((uint16_t)b[11] << 8));
+    return ESP_OK;
+}
+
+esp_err_t imu_read_sample(imu_sample_t *out_sample)
+{
+    if (!out_sample) return ESP_ERR_INVALID_ARG;
+    // Delegate the verified STATUS-check + burst read, then scale to mg/mdps.
+    imu_raw_sample_t raw;
+    esp_err_t err = imu_read_sample_raw(&raw);
+    if (err != ESP_OK) return err;
 
     memset(out_sample, 0, sizeof(*out_sample));
-    out_sample->timestamp_us = (uint64_t)esp_timer_get_time();
-    out_sample->accel_x_mg = (int32_t)ax * ACCEL_MG_NUM / ACCEL_MG_DEN;
-    out_sample->accel_y_mg = (int32_t)ay * ACCEL_MG_NUM / ACCEL_MG_DEN;
-    out_sample->accel_z_mg = (int32_t)az * ACCEL_MG_NUM / ACCEL_MG_DEN;
-    out_sample->gyro_x_mdps = (int32_t)gx * GYRO_MDPS_NUM / GYRO_MDPS_DEN;
-    out_sample->gyro_y_mdps = (int32_t)gy * GYRO_MDPS_NUM / GYRO_MDPS_DEN;
-    out_sample->gyro_z_mdps = (int32_t)gz * GYRO_MDPS_NUM / GYRO_MDPS_DEN;
+    out_sample->timestamp_us = raw.timestamp_us;
+    out_sample->accel_x_mg  = (int32_t)raw.accel[0] * ACCEL_MG_NUM / ACCEL_MG_DEN;
+    out_sample->accel_y_mg  = (int32_t)raw.accel[1] * ACCEL_MG_NUM / ACCEL_MG_DEN;
+    out_sample->accel_z_mg  = (int32_t)raw.accel[2] * ACCEL_MG_NUM / ACCEL_MG_DEN;
+    out_sample->gyro_x_mdps = (int32_t)raw.gyro[0] * GYRO_MDPS_NUM / GYRO_MDPS_DEN;
+    out_sample->gyro_y_mdps = (int32_t)raw.gyro[1] * GYRO_MDPS_NUM / GYRO_MDPS_DEN;
+    out_sample->gyro_z_mdps = (int32_t)raw.gyro[2] * GYRO_MDPS_NUM / GYRO_MDPS_DEN;
     out_sample->flags = IMU_SAMPLE_FLAG_NONE;
     return ESP_OK;
 }

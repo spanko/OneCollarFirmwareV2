@@ -15,10 +15,11 @@
 
 static const char *TAG = "oc.imu.sampler";
 
-// Ring buffer: NOSPLIT holds whole imu_sample_t items. 256 samples ≈ 2.5 s of
-// headroom at 104 Hz before a stalled consumer back-pressures the sampler.
+// Ring buffer: NOSPLIT holds whole imu_raw_sample_t items (raw int16 — the
+// capture/ImuBatch fidelity, not the sub-mg-floored mg/mdps form). 256 samples
+// ≈ 2.6 s of headroom at ~100 Hz before a stalled consumer back-pressures.
 #define RB_ITEM_COUNT   256
-#define RB_BYTES        (RB_ITEM_COUNT * sizeof(imu_sample_t))
+#define RB_BYTES        (RB_ITEM_COUNT * sizeof(imu_raw_sample_t))
 // Gap threshold for inferring a dropped sample: > 1.8× the nominal period.
 #define GAP_DROP_FACTOR_NUM   18
 #define GAP_DROP_FACTOR_DEN   10
@@ -40,7 +41,7 @@ static void IRAM_ATTR int2_isr(void *arg)
     }
 }
 
-static void account_sample(const imu_sample_t *s)
+static void account_sample(const imu_raw_sample_t *s)
 {
     taskENTER_CRITICAL(&s_stats_mux);
     if (s_stats.samples == 0) {
@@ -72,8 +73,8 @@ static void sampler_task(void *arg)
         ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(1000));
         esp_task_wdt_reset();
         // Drain every fresh sample (handles a coalesced/edge-missed interrupt).
-        imu_sample_t s;
-        while (imu_read_sample(&s) == ESP_OK) {
+        imu_raw_sample_t s;
+        while (imu_read_sample_raw(&s) == ESP_OK) {
             account_sample(&s);
             if (xRingbufferSend(s_rb, &s, sizeof(s), 0) != pdTRUE) {
                 taskENTER_CRITICAL(&s_stats_mux);

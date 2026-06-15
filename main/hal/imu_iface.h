@@ -84,6 +84,22 @@ esp_err_t imu_get_info(imu_info_t *out_info);
 esp_err_t imu_read_sample(imu_sample_t *out_sample);
 
 /**
+ * Raw chip-frame sample: int16 LSB, accel-first (the ImuBatch wire order).
+ * Full capture fidelity — no mg/mdps conversion, so no sub-LSB flooring (the
+ * integer mg conversion in imu_read_sample drops readings below ~1 mg to 0).
+ * This is the form the data logger / BLE stream carry; consumers apply the
+ * full-scale factor (from the session header) in float. Non-blocking;
+ * ESP_ERR_NOT_FOUND if no fresh data.
+ */
+typedef struct {
+    uint64_t timestamp_us;     ///< Capture time (board epoch, microseconds).
+    int16_t  accel[3];         ///< raw LSB: ax, ay, az
+    int16_t  gyro[3];          ///< raw LSB: gx, gy, gz
+} imu_raw_sample_t;
+
+esp_err_t imu_read_sample_raw(imu_raw_sample_t *out_sample);
+
+/**
  * Drain on-chip FIFO into caller buffer. Returns count actually drained.
  * Both DSO32X and DSV320X support hardware FIFO with configurable watermark.
  */

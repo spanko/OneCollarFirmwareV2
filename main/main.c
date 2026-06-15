@@ -197,7 +197,10 @@ void app_main(void)
         // has no real consumer yet; Stage B/C replace this discard). Log stats
         // every 5 s.
         vTaskDelay(pdMS_TO_TICKS(1000));
-        if (rb) {
+        // Drain + discard ONLY when no real consumer is active — while an IMU
+        // stream (Stage B) runs, its task is the sole ring consumer; two readers
+        // would split the sample stream.
+        if (rb && !ble_service_is_streaming()) {
             size_t sz;
             void *item;
             while ((item = xRingbufferReceive(rb, &sz, 0)) != NULL) {

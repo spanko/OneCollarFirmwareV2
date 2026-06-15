@@ -42,9 +42,12 @@
 #include "pb_encode.h"
 #include "ble_protocol.pb.h"
 
+#include "freertos/ringbuf.h"
+
 #include "board.h"
 #include "data_logger.h"
 #include "hal/imu_iface.h"
+#include "imu_sampler.h"
 #include "drivers/ble_service.h"
 #include "drivers/fuel.h"
 
@@ -91,6 +94,18 @@ static uint16_t s_cmd_tx_handle;
 static uint16_t s_event_tx_handle;
 static uint16_t s_stream_tx_handle;
 static uint16_t s_conn_handle = BLE_HS_CONN_HANDLE_NONE;
+
+// IMU streaming (Stage B): a dedicated task drains the imu_sampler ring buffer
+// into ImuBatch frames on stream_tx. ImuBatch.samples caps at 480 B = 40 samples
+// and fits one MTU-512 fragment, so each batch is a single notify.
+#define IMU_STREAM_BATCH_MAX   40     // samples/batch (ImuBatch.samples cap)
+#define IMU_STREAM_PERIOD_MS   250    // pump cadence (~25 samples/batch at ~100 Hz)
+static volatile bool s_streaming = false;
+static TaskHandle_t  s_stream_task = NULL;
+static uint16_t      s_stream_seq = 0;
+static uint32_t      s_stream_rate_hz = 0;       // measured (not nominal) — see start handler
+static uint32_t      s_stream_batches_sent = 0;
+static uint32_t      s_stream_batches_dropped = 0;
 
 /* Wire-format counters, served verbatim by GetDebugStats. */
 static onecollar_ble_v1_DebugStats s_stats;
@@ -515,6 +530,140 @@ static void handle_label_tag(uint16_t txn_id,
                                 : onecollar_ble_v1_Status_STATUS_NOT_READY);
 }
 
+// ---------------------------------------------------------------------------
+// IMU streaming (Stage B). The stream task owns its own encode buffers (NOT the
+// host-task s_resp / ble_send_payload statics) so it never races them; it calls
+// ble_notify_frame directly (NimBLE serializes notify internally). An ImuBatch
+// is <= 480 B payload -> one MTU-512 fragment, so a single env_encode + notify.
+// ---------------------------------------------------------------------------
+bool ble_service_is_streaming(void) { return s_streaming; }
+
+/* Drain up to one ImuBatch worth of raw samples and notify it. Stream-task-only
+ * (its statics are not shared with the host task). Returns true if a batch was
+ * sent (more may remain), false if the ring was empty or the send failed. */
+static bool stream_send_one_batch(void)
+{
+    RingbufHandle_t rb = imu_sampler_ringbuf();
+    if (!rb) return false;
+
+    static onecollar_ble_v1_ImuBatch batch;   // stream-task-only
+    uint8_t *out = batch.samples.bytes;
+    uint64_t base_ts = 0;
+    int n = 0;
+    while (n < IMU_STREAM_BATCH_MAX) {
+        size_t sz = 0;
+        imu_raw_sample_t *s = (imu_raw_sample_t *)xRingbufferReceive(rb, &sz, 0);
+        if (s == NULL) break;
+        if (sz == sizeof(*s)) {
+            if (n == 0) base_ts = s->timestamp_us;
+            const int16_t v[6] = { s->accel[0], s->accel[1], s->accel[2],
+                                   s->gyro[0],  s->gyro[1],  s->gyro[2] };
+            for (int k = 0; k < 6; k++) {
+                out[n * 12 + k * 2]     = (uint8_t)(v[k] & 0xFF);
+                out[n * 12 + k * 2 + 1] = (uint8_t)(((uint16_t)v[k] >> 8) & 0xFF);
+            }
+            n++;
+        }
+        vRingbufferReturnItem(rb, s);
+    }
+    if (n == 0) return false;
+
+    batch.seq               = s_stream_seq;
+    batch.base_timestamp_us = base_ts;
+    batch.rate_hz           = s_stream_rate_hz;
+    batch.sample_count      = (uint32_t)n;
+    batch.samples.size      = (pb_size_t)(n * 12);
+
+    static uint8_t pb_buf[onecollar_ble_v1_ImuBatch_size];
+    pb_ostream_t os = pb_ostream_from_buffer(pb_buf, sizeof(pb_buf));
+    if (!pb_encode(&os, onecollar_ble_v1_ImuBatch_fields, &batch)) {
+        ESP_LOGE(TAG, "ImuBatch encode failed: %s", PB_GET_ERROR(&os));
+        return false;
+    }
+    static uint8_t frame[BLE_FRAME_MAX];
+    int flen = env_encode(ENV_TYPE_IMU_BATCH, 0, s_stream_seq,
+                          pb_buf, (uint16_t)os.bytes_written, frame, sizeof(frame));
+    if (flen < 0) return false;
+    int rc = ble_notify_frame(s_stream_tx_handle, frame, flen);
+    if (rc != 0) {
+        s_stream_batches_dropped++;
+        if (rc == BLE_HS_ENOTCONN) s_streaming = false;  // peer gone — stop
+        return false;
+    }
+    s_stream_seq++;
+    s_stream_batches_sent++;
+    return true;
+}
+
+static void imu_stream_task(void *arg)
+{
+    (void)arg;
+    ESP_LOGI(TAG, "imu stream task started (rate=%u Hz)", s_stream_rate_hz);
+    while (s_streaming) {
+        while (s_streaming && stream_send_one_batch()) { /* clear any backlog */ }
+        vTaskDelay(pdMS_TO_TICKS(IMU_STREAM_PERIOD_MS));
+    }
+    ESP_LOGI(TAG, "imu stream task stopped (sent=%u dropped=%u)",
+             s_stream_batches_sent, s_stream_batches_dropped);
+    s_stream_task = NULL;
+    vTaskDelete(NULL);
+}
+
+static void handle_start_imu_stream(uint16_t txn_id,
+                                    const onecollar_ble_v1_StartImuStreamRequest *req)
+{
+    (void)req;  // rate is collar-clamped; we stream the sampler's native ODR
+    if (s_streaming) {  // idempotent
+        ble_send_status(txn_id, onecollar_ble_v1_Status_STATUS_OK);
+        return;
+    }
+    // Report the MEASURED rate (the DSO32X "104 Hz" runs ~98.5 Hz on this unit —
+    // see docs/10 bring-up log). The consumer reconstructs sample times from
+    // base_timestamp_us + N/rate_hz, so the measured rate (not nominal) keeps
+    // intra-batch timing honest; each batch re-bases off its first real sample.
+    imu_sampler_stats_t st;
+    imu_sampler_get_stats(&st);
+    if (st.samples > 1 && st.last_us > st.start_us) {
+        uint64_t span = st.last_us - st.start_us;
+        s_stream_rate_hz = (uint32_t)(((st.samples - 1) * 1000000ULL + span / 2) / span);
+    } else {
+        imu_info_t info;
+        s_stream_rate_hz = (imu_get_info(&info) == ESP_OK && info.odr_hz) ? info.odr_hz : 104;
+    }
+    s_stream_seq = 0;
+    s_stream_batches_sent = 0;
+    s_stream_batches_dropped = 0;
+    s_streaming = true;
+    if (xTaskCreatePinnedToCore(imu_stream_task, "imu_stream", 4096, NULL, 6,
+                                &s_stream_task, 0) != pdPASS) {
+        s_streaming = false;
+        ble_send_status(txn_id, onecollar_ble_v1_Status_STATUS_INTERNAL);
+        return;
+    }
+    ble_send_status(txn_id, onecollar_ble_v1_Status_STATUS_OK);
+}
+
+static void handle_stop_imu_stream(uint16_t txn_id)
+{
+    s_streaming = false;  // the task observes this and exits
+    ble_send_status(txn_id, onecollar_ble_v1_Status_STATUS_OK);
+}
+
+static void handle_get_stream_status(uint16_t txn_id)
+{
+    memset(&s_resp, 0, sizeof(s_resp));
+    s_resp.status         = onecollar_ble_v1_Status_STATUS_OK;
+    s_resp.which_response = onecollar_ble_v1_FromCollar_stream_status_tag;
+    onecollar_ble_v1_StreamStatus *st = &s_resp.response.stream_status;
+    st->running         = s_streaming;
+    st->rate_hz         = s_stream_rate_hz;
+    st->batches_sent    = s_stream_batches_sent;
+    st->samples_buffered = 0;   // consumer-drained ring; not separately tracked
+    st->buffer_capacity = 256;
+    st->batches_dropped = s_stream_batches_dropped;
+    ble_send_from_collar(txn_id, &s_resp);
+}
+
 static void handle_echo(uint16_t txn_id, const onecollar_ble_v1_EchoRequest *req)
 {
     memset(&s_resp, 0, sizeof(s_resp));
@@ -616,13 +765,20 @@ static void dispatch_to_collar(uint16_t txn_id, const onecollar_ble_v1_ToCollar 
     /* GPS / LoRa / streaming / session list+read+delete / geofence:
      * backing implementations pending (see data_logger.c TODOs for the
      * session surface). All retryable, hence NOT_READY. */
+    case onecollar_ble_v1_ToCollar_start_imu_stream_tag:
+        handle_start_imu_stream(txn_id, &to->request.start_imu_stream);
+        break;
+    case onecollar_ble_v1_ToCollar_stop_imu_stream_tag:
+        handle_stop_imu_stream(txn_id);
+        break;
+    case onecollar_ble_v1_ToCollar_get_stream_status_tag:
+        handle_get_stream_status(txn_id);
+        break;
+
     case onecollar_ble_v1_ToCollar_get_gps_tag:
     case onecollar_ble_v1_ToCollar_get_lora_status_tag:
     case onecollar_ble_v1_ToCollar_get_all_radios_tag:
-    case onecollar_ble_v1_ToCollar_start_imu_stream_tag:
-    case onecollar_ble_v1_ToCollar_stop_imu_stream_tag:
-    case onecollar_ble_v1_ToCollar_get_imu_batch_tag:
-    case onecollar_ble_v1_ToCollar_get_stream_status_tag:
+    case onecollar_ble_v1_ToCollar_get_imu_batch_tag:  /* time-range query needs buffered history (Stage C) */
     case onecollar_ble_v1_ToCollar_list_sessions_tag:
     case onecollar_ble_v1_ToCollar_read_session_tag:
     case onecollar_ble_v1_ToCollar_delete_session_tag:
@@ -774,6 +930,7 @@ static int ble_gap_event_handler(struct ble_gap_event *event, void *arg)
     case BLE_GAP_EVENT_DISCONNECT:
         ESP_LOGI(TAG, "disconnect reason=%d", event->disconnect.reason);
         s_conn_handle = BLE_HS_CONN_HANDLE_NONE;
+        s_streaming = false;  // stop the stream task if a capture was running
         /* NimBLE stops advertising on connect; re-arm so the bonded central
          * can always come back (no silent drop after first connection). */
         ble_start_adv();

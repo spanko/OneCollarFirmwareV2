@@ -3,9 +3,10 @@
  * @brief Continuous IMU sampler — Stage A of the capture pipeline.
  *
  * Drives the LSM6DSO32X at its configured ODR (104 Hz Tier 1 baseline) off the
- * INT2 data-ready interrupt, draining each ready sample via imu_read_sample into
- * a FreeRTOS ring buffer for downstream consumers (Stage B BLE streaming,
- * Stage C flash logging). See docs/07a §4 in onecollar-platform.
+ * INT2 data-ready interrupt, draining each ready sample via imu_read_sample_raw
+ * (raw int16 — capture/ImuBatch fidelity) into a FreeRTOS ring buffer for
+ * downstream consumers (Stage B BLE streaming, Stage C flash logging). See
+ * docs/07a §4 in onecollar-platform.
  *
  * Design (docs/07a Stage A): a dedicated high-priority task waits on an INT2
  * GPIO ISR notification, then drains all fresh samples (re-checking STATUS) so a
@@ -48,7 +49,7 @@ esp_err_t imu_sampler_start(void);
 /** Stop sampling and release the task + ISR. */
 esp_err_t imu_sampler_stop(void);
 
-/** Ring buffer of imu_sample_t for consumers (Stage B/C). NULL until started. */
+/** Ring buffer of imu_raw_sample_t for consumers (Stage B/C). NULL until started. */
 RingbufHandle_t imu_sampler_ringbuf(void);
 
 /** Snapshot the acquisition stats. */

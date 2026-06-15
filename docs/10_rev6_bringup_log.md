@@ -259,6 +259,34 @@ FIFO+watermark for Stage A — lowest-risk path to a verified sampler. FIFO
 for flash-write contention / autonomous field capture; FIFO_CTRL/STATUS register
 details captured during the docs/07a spec check.
 
+### 2026-06-15 — Stage B IMU streaming (ImuBatch on stream_tx); raw-int16 capture path
+
+**What changed.** Built the BLE IMU stream (platform docs/07a Stage B).
+- **Raw-int16 capture path.** Added `imu_read_sample_raw` (HAL + DSO32X impl;
+  DSV320X stub) returning chip-native int16 LSB, accel-first (ImuBatch order).
+  `imu_read_sample` now delegates to it then scales. Reason: the integer mg
+  conversion **floors sub-mg readings to 0** (`ax*122/1000`, 1 LSB = 0.122 mg →
+  0), a real capture-fidelity loss; the wire/log carry raw int16 and consumers
+  apply the FS factor in float. `imu_sampler` now buffers `imu_raw_sample_t`.
+- **Streaming.** `ble_service.c`: `start/stop_imu_stream` + `get_stream_status`
+  implemented (were `STATUS_NOT_READY`). A dedicated task drains the sampler ring
+  → packs ImuBatch (≤40 samples = 480 B, one MTU-512 fragment) → `stream_tx`
+  (type 0x04). Own encode buffers (no race with the host-task send path); stops
+  on disconnect. `main.c` drains the ring only when **not** streaming so the
+  stream task is the sole consumer. `get_imu_batch` (time-range query) stays
+  NOT_READY — needs buffered history (Stage C).
+- **Rate honesty.** ImuBatch.rate_hz / StreamStatus report the **measured** rate
+  (~98.5 Hz), not nominal 104 — so the consumer's `base_ts + N/rate_hz`
+  reconstruction stays accurate (each batch re-bases off its first real sample).
+
+**Verified on silicon (autonomous):** builds; boots clean; Stage A acquisition
+**not regressed** by the raw refactor (98.49 Hz, drop-free, rb_full=0).
+
+**Not yet verified (needs the phone):** on-air ImuBatch delivery + the full Gate B
+round-trip (phone starts the stream, writes a `data_schema` session, round-trips
+through `helsinki-eval`). That needs the mobile record path (start-stream + write
+session + video sync) and a phone bench session — firmware half is done.
+
 ---
 
 *Drafted 2026-06-05 after the first Rev 6 bring-up session. Append new
