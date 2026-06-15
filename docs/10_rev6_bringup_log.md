@@ -230,6 +230,35 @@ requirement in the 2026-06-05 session) — it survives the reset
 re-enumeration. If you forgot and got stuck: `usbipd detach` + re-`attach`
 restored it; manual BOOT+EN + esptool `--before no_reset` is the fallback.
 
+### 2026-06-15 — Stage A continuous IMU sampler (capture pipeline); Gate A passed
+
+**What changed.** First piece of the capture pipeline (platform docs/07a Stage A).
+Routed accel data-ready to INT2 in `imu_init` (`INT2_CTRL` 0x0E = `0x01`,
+`INT2_DRDY_XL`; grounded against STMicroelectronics/lsm6dso32x-pid + datasheet)
+and added `main/imu_sampler.{c,h}`: a Core-0 prio-8 task that wakes on an INT2
+rising-edge GPIO ISR and drains every fresh sample via the verified
+`imu_read_sample` into a 256-deep FreeRTOS ring buffer for downstream consumers.
+Started always-on from `main.c` for bench validation (production will gate on an
+active capture, Stage B).
+
+**Gate A (on silicon, board running ~35 s):** PASS.
+- Sustained, **drop-free** (`dropped~0`), **monotonic** (no nonmonotonic flag),
+  end-to-end clean (`rb_full=0` once the consumer drains every 1 s).
+- **Effective data-ready rate ≈ 98.5 Hz, not the nominal 104.** Every DRDY edge
+  is caught (zero drops; max inter-sample gap 10465 µs ≈ one period), so this is
+  the chip's *actual* ODR, not missed samples — within ST's ODR-accuracy spread.
+  **Non-blocking:** every sample carries a real `esp_timer` timestamp, so
+  downstream derives the true rate from timestamps, never from the nominal
+  `imu_odr_hz` (104) in the session header. Flagging so capture/feature code uses
+  per-sample timestamps, not the nominal ODR. (Open: confirm against the DSO32X
+  ODR-accuracy table; consider whether a tighter rate matters before fleet.)
+
+**Design note.** Chose INT2 data-ready (reuses the verified burst read) over
+FIFO+watermark for Stage A — lowest-risk path to a verified sampler. FIFO
+(`imu_drain_fifo`, the `FIFO_OVERFLOW` flag) is the Stage C robustness upgrade
+for flash-write contention / autonomous field capture; FIFO_CTRL/STATUS register
+details captured during the docs/07a spec check.
+
 ---
 
 *Drafted 2026-06-05 after the first Rev 6 bring-up session. Append new

@@ -86,6 +86,7 @@ set(SRCS
     ${_OC_ENTRY_SRC}
     i2c_bus.c
     data_logger.c
+    imu_sampler.c
     drivers/${BOARD_IMU_DRIVER}
     drivers/fuel_max17048.c
     drivers/ble_service.c
@@ -122,7 +123,7 @@ endif()
 # i2c_bus.c uses the new-style i2c_master API, fuel_max17048.c reads the
 # ALRT pin via driver/gpio.h.
 set(REQUIRES_LIST nvs_flash esp_timer driver bt nanopb esp_app_format
-    esp_driver_i2c esp_driver_gpio)
+    esp_driver_i2c esp_driver_gpio esp_ringbuf)
 # Generated BLE protocol bindings (nanopb). Source: ../onecollar-platform/
 # contracts/ble_protocol.proto + .options, regenerated via
 # ../onecollar-platform/tools/codegen/gen_nanopb.sh. Consumed by

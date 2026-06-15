@@ -40,6 +40,7 @@ static const char *TAG = "oc.imu";
 // STMicroelectronics/lsm6dso32x-pid).
 #define LSM6_WHO_AM_I_VALUE   0x6C
 #define LSM6_REG_WHO_AM_I     0x0F
+#define LSM6_REG_INT2_CTRL    0x0E  // data-ready routing to the INT2 pin
 #define LSM6_REG_CTRL1_XL     0x10
 #define LSM6_REG_CTRL2_G      0x11
 #define LSM6_REG_CTRL3_C      0x12
@@ -49,6 +50,15 @@ static const char *TAG = "oc.imu";
 #define LSM6_CTRL3_C_INIT     0x44  // BDU=1, IF_INC=1
 #define LSM6_CTRL1_XL_INIT    0x40  // 104 Hz, FS_XL=00 -> ±4 g
 #define LSM6_CTRL2_G_INIT     0x44  // 104 Hz, FS_G=500 dps
+// INT2_CTRL: route accel data-ready (INT2_DRDY_XL, bit 0) to the INT2 pin
+// (board.h: INT2 = data-ready @ 104 Hz). Grounded against
+// STMicroelectronics/lsm6dso32x-pid lsm6dso32x_reg.h (INT2_CTRL = 0x0E,
+// int2_drdy_xl = bit 0) + the DSO32X datasheet. DRDY is push-pull active-high
+// by default (CTRL3_C PP_OD=0, H_LACTIVE=0) → rising edge per new sample; with
+// BDU=1 the burst read stays consistent. Accel + gyro share the 104 Hz ODR, so
+// the accel-DRDY edge is a sufficient per-sample trigger; the burst read still
+// re-checks STATUS (XLDA|GDA) before trusting the data.
+#define LSM6_INT2_CTRL_INIT   0x01  // INT2_DRDY_XL
 #define LSM6_STATUS_XLDA      0x01  // accel data-ready
 #define LSM6_STATUS_GDA       0x02  // gyro data-ready
 
@@ -82,15 +92,17 @@ esp_err_t imu_init(void)
     uint8_t ctrl3 = LSM6_CTRL3_C_INIT;
     uint8_t ctrl1 = LSM6_CTRL1_XL_INIT;
     uint8_t ctrl2 = LSM6_CTRL2_G_INIT;
+    uint8_t int2  = LSM6_INT2_CTRL_INIT;
     if (i2c_bus_write(BOARD_IMU_I2C_ADDR, LSM6_REG_CTRL3_C, &ctrl3, 1) != ESP_OK ||
         i2c_bus_write(BOARD_IMU_I2C_ADDR, LSM6_REG_CTRL1_XL, &ctrl1, 1) != ESP_OK ||
-        i2c_bus_write(BOARD_IMU_I2C_ADDR, LSM6_REG_CTRL2_G, &ctrl2, 1) != ESP_OK) {
+        i2c_bus_write(BOARD_IMU_I2C_ADDR, LSM6_REG_CTRL2_G, &ctrl2, 1) != ESP_OK ||
+        i2c_bus_write(BOARD_IMU_I2C_ADDR, LSM6_REG_INT2_CTRL, &int2, 1) != ESP_OK) {
         ESP_LOGE(TAG, "CTRL register config failed");
         return ESP_FAIL;
     }
 
     s_ready = true;
-    ESP_LOGI(TAG, "LSM6DSO32X online @ 0x%02X (WHO_AM_I=0x%02X, 104 Hz, ±4 g / 500 dps)",
+    ESP_LOGI(TAG, "LSM6DSO32X online @ 0x%02X (WHO_AM_I=0x%02X, 104 Hz, ±4 g / 500 dps, INT2=DRDY)",
              BOARD_IMU_I2C_ADDR, who);
     // TODO: FIFO + INT1 MLC routing for Tier 0 wake (separate task).
     return ESP_OK;

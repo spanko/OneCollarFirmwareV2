@@ -30,6 +30,7 @@
 #include "board.h"
 #include "i2c_bus.h"
 #include "data_logger.h"
+#include "imu_sampler.h"
 
 #include "hal/imu_iface.h"
 #include "hal/sflp_iface.h"
@@ -113,6 +114,14 @@ void app_main(void)
         }
     }
 
+    // 3b. Continuous IMU sampler (Stage A, docs/07a). Always-on for now so the
+    //     bench can validate acquisition (Gate A); production will gate it on an
+    //     active capture (Stage B). Non-fatal: a sampler failure leaves the
+    //     collar otherwise functional.
+    if (imu_sampler_start() != ESP_OK) {
+        ESP_LOGW(TAG, "imu_sampler_start failed — capture unavailable");
+    }
+
     // 4. SFLP — Rev 7 capability; stub returns NOT_SUPPORTED on Rev 6
     {
         esp_err_t err = sflp_init();
@@ -178,9 +187,39 @@ void app_main(void)
 
     ESP_LOGI(TAG, "Boot complete. Tier 0 will arm once MLC program is loaded.");
 
-    // 10. Idle. Real firmware spawns Tier-0 / Tier-1 / BLE / data-pump tasks.
+    // 10. Idle loop. Real firmware spawns Tier-1 / data-pump consumers; for now
+    //     this drains the sampler ring buffer (so it doesn't back-pressure) and
+    //     reports Stage A / Gate A acquisition stats.
+    RingbufHandle_t rb = imu_sampler_ringbuf();
+    int tick = 0;
     while (1) {
-        vTaskDelay(pdMS_TO_TICKS(60 * 1000));
-        ESP_LOGI(TAG, "alive (capabilities=0x%08x)", data_logger_current_capabilities());
+        // Drain every 1 s so the 256-deep buffer never back-pressures (Gate A
+        // has no real consumer yet; Stage B/C replace this discard). Log stats
+        // every 5 s.
+        vTaskDelay(pdMS_TO_TICKS(1000));
+        if (rb) {
+            size_t sz;
+            void *item;
+            while ((item = xRingbufferReceive(rb, &sz, 0)) != NULL) {
+                vRingbufferReturnItem(rb, item);
+            }
+        }
+        if (++tick < 5) continue;
+        tick = 0;
+
+        imu_sampler_stats_t st;
+        imu_sampler_get_stats(&st);
+        if (st.samples > 1 && st.last_us > st.start_us) {
+            double secs = (double)(st.last_us - st.start_us) / 1e6;
+            double rate = (double)(st.samples - 1) / secs;
+            ESP_LOGI(TAG, "Gate A: %llu samples, %.2f Hz, dropped~%llu, max_gap=%llu us, rb_full=%u%s",
+                     (unsigned long long)st.samples, rate,
+                     (unsigned long long)st.dropped_est,
+                     (unsigned long long)st.max_gap_us, st.ringbuf_full,
+                     st.nonmonotonic ? ", NONMONOTONIC!" : "");
+        } else {
+            ESP_LOGW(TAG, "Gate A: no samples yet (caps=0x%08x)",
+                     data_logger_current_capabilities());
+        }
     }
 }
