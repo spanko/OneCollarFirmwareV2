@@ -10,10 +10,11 @@
  * Differences from Rev 6:
  *   - IMU is LSM6DSV320X (was LSM6DSO32X) — same I2C address, adds SFLP and
  *     high-g channel as parallel on-chip blocks alongside MLC.
- *   - I2S MEMS microphone added — Tier 2 audio behaviors.
+ *   - I2S MEMS capture microphone added — Tier 2 audio behaviors. Motion-woken
+ *     only (recorded after MLC wakes the device); there is NO always-on acoustic
+ *     wake. Motion (MLC) is the sole wake source. (decision log 2026-06-16)
  *   - CC1101 sub-GHz radio removed (no firmware dependency in V1; revisit if
  *     802.15.4 / Thread becomes required). Frees BOARD_CC1101_CS_GPIO.
- *   - Optional Infineon IM73A135 PDM+VAD (BOARD_HAS_VAD) — bench evaluation.
  *
  * NOTE: Pin assignments below are projected from the Rev 6 baseline plus
  * architectural intent. Patrick owns final Rev 7 PCB pin selection. All pins
@@ -40,8 +41,10 @@
 #define BOARD_HAS_IMU_FSM       1   // 8 programmable state machines + ASC
 #define BOARD_HAS_FUEL_GAUGE    1
 #define BOARD_HAS_BAROMETER     0   // BMP390 footprint, DNP — re-evaluate
-#define BOARD_HAS_AUDIO         1   // I2S MEMS mic
-#define BOARD_HAS_VAD           0   // Infineon IM73A135 — set 1 if eval populates DNP
+#define BOARD_HAS_AUDIO         1   // I2S MEMS capture mic (motion-woken; part TBD)
+#define BOARD_HAS_VAD           0   // DROPPED 2026-06-16: motion (MLC) is the sole wake
+                                    // source — no always-on acoustic wake. (Kept as 0,
+                                    // not removed, so #if BOARD_HAS_VAD stays valid.)
 #define BOARD_HAS_GPS           1
 #define BOARD_HAS_LORA          1
 #define BOARD_HAS_SUBGHZ_RADIO  0   // CC1101 removed
@@ -106,14 +109,11 @@
 #define BOARD_I2S_BITS_PER_SAMP 16
 
 // ---------------------------------------------------------------------------
-// Optional Infineon IM73A135 PDM+VAD (BOARD_HAS_VAD)
-//   PDM data + always-on VAD interrupt. Decision pending bench eval.
+// Always-on acoustic wake — DROPPED 2026-06-16 (decision log).
+//   Motion (LSM6DSV320X MLC) is the sole wake source; no VAD chip. The earlier
+//   candidate (Infineon IM73A135) was in any case an *analog* mic with no VAD —
+//   not a wake-on-sound part. GPIO 39/40/41 are freed for PCB layout.
 // ---------------------------------------------------------------------------
-#if BOARD_HAS_VAD
-#define BOARD_VAD_PDM_CLK_GPIO  39  // PATRICK_TODO
-#define BOARD_VAD_PDM_DAT_GPIO  40  // PATRICK_TODO
-#define BOARD_VAD_INT_GPIO      41  // PATRICK_TODO — wakes ESP32 from deep sleep
-#endif
 
 // ---------------------------------------------------------------------------
 // GPS — unchanged from Rev 6

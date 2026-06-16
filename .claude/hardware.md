@@ -84,12 +84,16 @@ Carry-overs from Rev 6 unless noted.
 - **MCU:** ESP32-S3-WROOM-1-N16R8 (unchanged)
 - **IMU:** ST LSM6DSV320X (replaces LSM6DSO32X) — same I2C address 0x6A,
   same INT1/INT2 pin mapping, MLC capacity unchanged
-- **Microphone (NEW):** I2S MEMS mic, **part TBD** (PATRICK_TODO on pins).
-  Earlier candidates SPH0645LM4H / ICS-43434 are not yet selected. Acoustic
-  vent (Gore or equivalent) required behind mic in enclosure.
-- **VAD (evaluating):** Infineon IM73A135 PDM + on-chip VAD, default DNP
-  (`BOARD_HAS_VAD = 0`). Bench eval pending; revisit whether the LSM6DSV320X's
-  MLC-driven wake makes the always-on VAD chip redundant.
+- **Capture microphone (NEW):** I2S MEMS mic, **part TBD** (PATRICK_TODO on pins).
+  Earlier candidates SPH0645LM4H / ICS-43434 are not yet selected. **Motion-woken
+  only** — recorded after the MLC wakes the device, for Tier-2 audio fusion and the
+  `vocalization_intensity` feature; it is NOT an always-on listener. Acoustic vent
+  (Gore or equivalent) required behind mic in enclosure.
+- **Always-on acoustic wake — DROPPED 2026-06-16 (decision log).** Motion (MLC) is
+  the sole wake source. The earlier "VAD" candidate (Infineon IM73A135) was in any
+  case an **analog mic with no VAD and no PDM** — not a wake-on-sound part; the spec
+  mislabeled it. If acoustic wake is ever revisited, the right part class is a
+  wake-on-sound mic (e.g. Vesper/Qualcomm VM1010, ~3 µA listening), not the IM73A135.
 - **Sub-GHz:** CC1101 **removed**. GPIO 14 (former CS) freed for reassignment.
 - **Battery:** LiPo, target 500 mAh, finalization pending enclosure decisions.
 
@@ -110,8 +114,7 @@ Carry-overs from Rev 6 unless noted.
 ### Rev 7 PATRICK_TODO items (open before silicon order)
 
 - **LoRa RST GPIO** (currently scratch-assigned)
-- **I2S BCLK / WS / DIN GPIO** (mic pin assignment)
-- **VAD PDM_CLK / PDM_DAT / INT GPIO** (only if VAD populates)
+- **I2S BCLK / WS / DIN GPIO** (capture-mic pin assignment)
 - Verify INT1 / INT2 routing matches Rev 6 (intent is to keep them stable
   so the IMU HAL wiring is rev-portable)
 
