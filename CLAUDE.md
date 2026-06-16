@@ -197,12 +197,14 @@ stays in this repo; it is not cross-cutting.)
 - `onecollar-platform/` — the coordination / brain repo: docs, contracts,
   decision log, `.claude/` tooling. Read its `CLAUDE.md` first for anything
   cross-cutting.
-- `OneCollarFirmware/` — V1, legacy, snapshot in the platform repo's `docs/snapshots/`
-- `OneCollarHardware/` — KiCad PCB designs (rev 6 shipping, rev 7 in design)
-- `WearDoggoTrainer/` — MAUI mobile app, being retired in favor of Flutter
-- `WearDoggoTrainerAPI/` — Azure SAS broker (has a known auth gap, see
-  kickoff brief, address before broader beta)
-- `LastCollarTestBed/` — historical ML/firmware sandbox, snapshot only
+- `OneCollarHardware/` — PCB designs, **Altium authoritative** (KiCad/SkiDL
+  retired 2026-06-15, see platform decision log); rev 6 shipping, rev 7 in design
+- `onecollar-mobile/` — Flutter app (iOS + Android), the active mobile repo
+- `onecollar-web/` — Azure Static Web Apps + Functions
+- Legacy / snapshot only (platform repo `docs/snapshots/`): `OneCollarFirmware/`
+  (V1), `WearDoggoTrainer/` (MAUI, retired in favor of Flutter),
+  `WearDoggoTrainerAPI/` (V1 Azure SAS broker, known auth gap),
+  `LastCollarTestBed/` (ML/firmware sandbox)
 
 ## Collaborators
 

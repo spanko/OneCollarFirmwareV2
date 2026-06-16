@@ -158,5 +158,6 @@ architectures without explicit user opt-in.
 ## Hardware collaborator
 
 Patrick Carberry (Upwork) — schematic and layout, owns PATRICK_TODO items.
-Adam owns silicon selection and firmware. KiCad 9 + SkiDL toolchain in
-`OneCollarHardware/`.
+Adam owns silicon selection and firmware. **Altium is the authoritative EDA
+tool** in `OneCollarHardware/` (KiCad 9 + SkiDL retired 2026-06-15, see platform
+decision log).
