@@ -41,7 +41,8 @@
 #define BOARD_HAS_IMU_FSM       1   // 8 programmable state machines + ASC
 #define BOARD_HAS_FUEL_GAUGE    1
 #define BOARD_HAS_BAROMETER     0   // BMP390 footprint, DNP — re-evaluate
-#define BOARD_HAS_AUDIO         1   // I2S MEMS capture mic (motion-woken; part TBD)
+#define BOARD_HAS_AUDIO         1   // digital I2S/PDM MEMS capture mic, motion-woken
+                                    // (part TBD; analog ruled out — see decision log)
 #define BOARD_HAS_VAD           0   // DROPPED 2026-06-16: motion (MLC) is the sole wake
                                     // source — no always-on acoustic wake. (Kept as 0,
                                     // not removed, so #if BOARD_HAS_VAD stays valid.)

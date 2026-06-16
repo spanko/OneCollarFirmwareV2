@@ -84,11 +84,13 @@ Carry-overs from Rev 6 unless noted.
 - **MCU:** ESP32-S3-WROOM-1-N16R8 (unchanged)
 - **IMU:** ST LSM6DSV320X (replaces LSM6DSO32X) — same I2C address 0x6A,
   same INT1/INT2 pin mapping, MLC capacity unchanged
-- **Capture microphone (NEW):** I2S MEMS mic, **part TBD** (PATRICK_TODO on pins).
-  Earlier candidates SPH0645LM4H / ICS-43434 are not yet selected. **Motion-woken
-  only** — recorded after the MLC wakes the device, for Tier-2 audio fusion and the
-  `vocalization_intensity` feature; it is NOT an always-on listener. Acoustic vent
-  (Gore or equivalent) required behind mic in enclosure.
+- **Capture microphone (NEW):** **digital I2S/PDM** MEMS mic, **part TBD**
+  (PATRICK_TODO on pins). Candidates are digital I2S parts (SPH0645LM4H / ICS-43434
+  class) — **analog ruled out** (2026-06-16, confirmed independently), so the IP57
+  analog IM73A135 is off the table; a digital mic matches the assumed I2S interface
+  with no external codec/ADC. **Motion-woken only** — recorded after the MLC wakes
+  the device, for Tier-2 audio fusion and the `vocalization_intensity` feature; it is
+  NOT an always-on listener. Acoustic vent (Gore or equivalent) required behind mic.
 - **Always-on acoustic wake — DROPPED 2026-06-16 (decision log).** Motion (MLC) is
   the sole wake source. The earlier "VAD" candidate (Infineon IM73A135) was in any
   case an **analog mic with no VAD and no PDM** — not a wake-on-sound part; the spec
