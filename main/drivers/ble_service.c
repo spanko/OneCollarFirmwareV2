@@ -518,7 +518,16 @@ static void handle_start_capture(uint16_t txn_id,
     }
     datalog_session_header_t hdr;
     esp_err_t err = data_logger_session_open(&hdr);
-    if (err == ESP_ERR_INVALID_STATE) {
+    if (err == ESP_ERR_INVALID_STATE && !s_capturing && !s_capture_task) {
+        // A session is open but no logger is running — a stale/orphaned session
+        // from a prior abnormal exit. Finalize it (it stays listable + readable)
+        // and retry once, rather than wedging at BUSY until a reboot. Belt-and-
+        // suspenders for any residual desync (decision log 2026-06-15 (9)).
+        ESP_LOGW(TAG, "start_capture: stale open session — finalizing + retrying");
+        data_logger_session_close();
+        err = data_logger_session_open(&hdr);
+    }
+    if (err == ESP_ERR_INVALID_STATE) {  // a capture is genuinely active
         ble_send_status(txn_id, onecollar_ble_v1_Status_STATUS_BUSY);
         return;
     }
@@ -556,13 +565,19 @@ static void handle_start_capture(uint16_t txn_id,
 
 static void handle_stop_capture(uint16_t txn_id)
 {
-    // Stop the logger and JOIN it before closing, so no append races the close.
     s_capturing = false;
-    for (int i = 0; i < 50 && s_capture_task; i++) vTaskDelay(pdMS_TO_TICKS(20));
-    esp_err_t err = data_logger_session_close();
-    ble_send_status(txn_id, err == ESP_OK
-                                ? onecollar_ble_v1_Status_STATUS_OK
-                                : onecollar_ble_v1_Status_STATUS_NOT_READY);
+    if (s_capture_task) {
+        // Signal + JOIN; the task closes the session on exit (see capture_log_task).
+        for (int i = 0; i < 50 && s_capture_task; i++) vTaskDelay(pdMS_TO_TICKS(20));
+    } else {
+        // No logger task running, but a session may still be open if a prior
+        // capture self-stopped abnormally. Defensively finalize it so the next
+        // start_capture is clean (this is the field recovery the app's
+        // force-stop drives — decision log 2026-06-15 (9)).
+        data_logger_session_close();  // INVALID_STATE if nothing open — harmless
+    }
+    ble_send_status(txn_id, s_capture_task ? onecollar_ble_v1_Status_STATUS_NOT_READY
+                                           : onecollar_ble_v1_Status_STATUS_OK);
 }
 
 static void handle_label_tag(uint16_t txn_id,
@@ -712,8 +727,16 @@ static void capture_log_task(void *arg)
         while (s_capturing && capture_log_one_batch()) { /* clear backlog */ }
         vTaskDelay(pdMS_TO_TICKS(IMU_CAPTURE_PERIOD_MS));
     }
-    ESP_LOGI(TAG, "capture log task stopped (frames=%u samples=%u)",
-             s_capture_frames, s_capture_samples);
+    // Close the session HERE so it happens on every exit path: a normal stop
+    // (handle_stop_capture cleared s_capturing) and a self-stop on append error
+    // (capture_log_one_batch cleared it). Centralizing close in the task keeps
+    // data_logger's s_session_open in lockstep with s_capturing — the leak on
+    // the error path is what wedged start_capture at BUSY (decision log
+    // 2026-06-15 (9)). Close before clearing s_capture_task so a joiner that
+    // sees the handle cleared knows the session is already finalized.
+    esp_err_t e = data_logger_session_close();
+    ESP_LOGI(TAG, "capture log task stopped (frames=%u samples=%u, close=%s)",
+             s_capture_frames, s_capture_samples, esp_err_to_name(e));
     s_capture_task = NULL;
     vTaskDelete(NULL);
 }

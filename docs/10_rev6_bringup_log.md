@@ -338,6 +338,29 @@ panic from the new tasks/handlers).
 (the core's `_request` expects one response per txn; `ReadSession` returns a
 chunk *series*) + a "capture to flash" control. Next session.
 
+### 2026-06-15 — Fix: capture session-state desync (start_capture stuck at BUSY)
+
+**Symptom (found during the Gate-C off-tether bench).** After a long capture,
+`start_capture` returned `STATUS_BUSY` forever, yet the collar was provably idle
+(main idle-loop Gate A still incrementing => `s_capturing==false`). Root cause:
+`capture_log_one_batch` on an append error set `s_capturing=false` but never
+closed the session, leaking `data_logger`'s `s_session_open=true`. The two state
+machines desynced, and `data_logger_session_open` then returned `INVALID_STATE`
+(-> BUSY) on every subsequent capture until a `stop_capture` or reboot.
+
+**Fix (3 parts, `ble_service.c`).** (1) `capture_log_task` now calls
+`data_logger_session_close()` on *every* exit path (normal stop and error
+self-stop), centralizing session lifetime so `s_session_open` stays in lockstep
+with `s_capturing`. (2) `handle_stop_capture` no longer double-closes — it signals
++ joins the task; if no task is running it defensively closes any stale-open
+session. (3) `handle_start_capture` recovers a stale-open session (finalize +
+retry once) instead of returning BUSY when no capture is active. The orphaned
+session is *finalized*, not discarded — it stays listable/readable.
+
+**Verified on silicon:** builds (80% free), boots clean (Gate A 98.5 Hz drop-free,
+FS:mounted, no panic). The recovery paths are exercised naturally on the next
+bench capture/stop cycle. Platform decision log 2026-06-15 (9).
+
 ---
 
 *Drafted 2026-06-05 after the first Rev 6 bring-up session. Append new
