@@ -96,8 +96,12 @@ Carry-overs from Rev 6 unless noted.
   case an **analog mic with no VAD and no PDM** — not a wake-on-sound part; the spec
   mislabeled it. If acoustic wake is ever revisited, the right part class is a
   wake-on-sound mic (e.g. Vesper/Qualcomm VM1010, ~3 µA listening), not the IM73A135.
+- **Barometer:** **REMOVED** (2026-06-16) — no value at this stage, frees board
+  area. Rev 6 carried the BMP390 footprint DNP; Rev 7 drops it entirely.
 - **Sub-GHz:** CC1101 **removed**. GPIO 14 (former CS) freed for reassignment.
-- **Battery:** LiPo, target 500 mAh, finalization pending enclosure decisions.
+- **Battery:** **enclosure-variant** — multiple enclosures support multiple cell
+  sizes (Adam owns enclosure + battery). Not a board-level open question; the
+  MAX17048 ModelGauge is capacity-agnostic, so firmware doesn't depend on the size.
 
 ### Rev 7 I2C bus (planned)
 
@@ -105,7 +109,6 @@ Carry-overs from Rev 6 unless noted.
 |--------|---------|-------|
 | LSM6DSV320X IMU | 0x6A (SA0=GND) | Same as Rev 6 — convenient |
 | MAX17048 fuel gauge | 0x36 | Carry-over |
-| BMP390 baro (DNP) | 0x77 | Carry-over |
 
 ### Rev 7 IMU ID
 

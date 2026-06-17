@@ -4,12 +4,13 @@
  *
  * Hardware: ESP32-S3-WROOM-1-N16R8 + STMicro LSM6DSV320X (IMU) +
  *           MAX17048 (fuel gauge) + RFM95W (LoRa) + NEO-M8Q (GPS, external) +
- *           I2S MEMS microphone (acoustic vent in enclosure) +
- *           BMP390 (barometer, DNP — re-evaluate per power cost).
+ *           digital I2S MEMS microphone (acoustic vent in enclosure).
  *
  * Differences from Rev 6:
  *   - IMU is LSM6DSV320X (was LSM6DSO32X) — same I2C address, adds SFLP and
  *     high-g channel as parallel on-chip blocks alongside MLC.
+ *   - BMP390 barometer REMOVED — no value at this stage, frees board area
+ *     (Rev 6 carried it DNP; Rev 7 drops the footprint). (decision log 2026-06-16)
  *   - I2S MEMS capture microphone added — Tier 2 audio behaviors. Motion-woken
  *     only (recorded after MLC wakes the device); there is NO always-on acoustic
  *     wake. Motion (MLC) is the sole wake source. (decision log 2026-06-16)
@@ -40,7 +41,8 @@
 #define BOARD_HAS_IMU_MLC       1   // 8 trees, 256 nodes (same capacity as DSO32X)
 #define BOARD_HAS_IMU_FSM       1   // 8 programmable state machines + ASC
 #define BOARD_HAS_FUEL_GAUGE    1
-#define BOARD_HAS_BAROMETER     0   // BMP390 footprint, DNP — re-evaluate
+#define BOARD_HAS_BAROMETER     0   // REMOVED 2026-06-16 — no value at this stage;
+                                    // no footprint on Rev 7 (kept =0 so #if stays valid)
 #define BOARD_HAS_AUDIO         1   // digital I2S/PDM MEMS capture mic, motion-woken
                                     // (part TBD; analog ruled out — see decision log)
 #define BOARD_HAS_VAD           0   // DROPPED 2026-06-16: motion (MLC) is the sole wake
@@ -54,10 +56,10 @@
 #define BOARD_HAS_BUZZER        0
 
 // ---------------------------------------------------------------------------
-// I2C bus — unchanged from Rev 6
+// I2C bus
 //   IMU       0x6A   LSM6DSV320X (same default address as LSM6DSO32X)
 //   Fuel      0x36   MAX17048
-//   Baro      0x77   BMP390 (DNP)
+//   (BMP390 baro removed on Rev 7 — 0x77 no longer populated)
 // ---------------------------------------------------------------------------
 #define BOARD_I2C_PORT          0
 #define BOARD_I2C_SDA_GPIO      8
@@ -66,7 +68,8 @@
 
 #define BOARD_IMU_I2C_ADDR      0x6A
 #define BOARD_FUEL_I2C_ADDR     0x36
-#define BOARD_BARO_I2C_ADDR     0x77
+#define BOARD_BARO_I2C_ADDR     0x77  // baro not populated on Rev 7; kept for the
+                                      // shared bringup_rev6 sketch's I2C-scan compat
 
 // ---------------------------------------------------------------------------
 // IMU interrupts (LSM6DSV320X)
@@ -137,5 +140,8 @@
 // ---------------------------------------------------------------------------
 // Power / battery
 // ---------------------------------------------------------------------------
-#define BOARD_BATTERY_MAH       500
+// Battery is enclosure-variant: multiple enclosures support multiple cell sizes
+// (Adam owns enclosure/battery). The value below is a nominal reference only — the
+// MAX17048 ModelGauge is capacity-agnostic, so firmware does not depend on it.
+#define BOARD_BATTERY_MAH       500   // nominal reference only — varies by enclosure
 #define BOARD_BATTERY_CHEMISTRY "LiPo 3.7V"
